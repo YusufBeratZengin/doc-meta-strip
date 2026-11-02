@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/YusufBeratZengin/doc-meta-strip/security/advisories/new
+    about: Please report security problems privately, never in a public issue.
+  - name: Question / usage help
+    url: https://github.com/YusufBeratZengin/doc-meta-strip/discussions
+    about: Ask about flags, formats or integration instead of opening an issue.

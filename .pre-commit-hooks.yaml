@@ -1,0 +1,9 @@
+- id: doc-meta-strip
+  name: doc-meta-strip (remove document and image metadata)
+  description: Strip GPS, author, company and editing history from staged PDF/DOCX/XLSX/image files.
+  entry: doc-meta-strip clean --staged --quiet
+  language: python
+  # The tool reads the git index itself, so pre-commit must not pass filenames.
+  pass_filenames: false
+  always_run: true
+  stages: [pre-commit]

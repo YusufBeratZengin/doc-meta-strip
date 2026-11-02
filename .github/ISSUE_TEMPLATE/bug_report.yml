@@ -1,0 +1,75 @@
+name: Bug report
+description: Something is wrong — a leak survived, a file got corrupted, or the CLI misbehaved.
+title: "[bug]: "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. **Do not attach real documents or photos.**
+        Generate a minimal sample instead, or describe the metadata category
+        (`exif:GPS`, `core:creator`, `pdf:Info/Author`, …) without the value.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `doc-meta-strip --version`
+      placeholder: doc-meta-strip 0.1.0
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Linux
+        - Windows
+        - macOS
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      placeholder: "3.12.4"
+    validations:
+      required: true
+  - type: input
+    id: format
+    attributes:
+      label: File format involved
+      placeholder: DOCX
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command you ran
+      description: Redact real paths.
+      render: shell
+      placeholder: doc-meta-strip clean ./belgeler/ --in-place --report audit.json
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+      description: Paste the command output, including any traceback.
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I reproduced this on the latest release.
+          required: true
+        - label: The sample I am sharing is synthetic and contains no personal data.
+          required: true

@@ -1,0 +1,47 @@
+name: Feature request
+description: Suggest a format, a metadata category, or a workflow improvement.
+title: "[feature]: "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: Describe the situation, not the implementation.
+      placeholder: A scanned contract keeps a producer string with the seller's company name...
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behaviour
+      description: Which command or flag should exist? What should it do?
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - New file format
+        - Missing metadata category
+        - CLI / UX
+        - Pre-commit / CI integration
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What do you do today instead? (mat2, exiftool, manual cleanup…)
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: This is about structural metadata, not OCR or text redaction (out of scope).
+          required: true
+        - label: I checked the issue list for duplicates.
+          required: true
