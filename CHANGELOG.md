@@ -39,7 +39,7 @@ First public release.
   `--backup`, `--password` for encrypted PDFs, `--strip-dates`,
   `--keep-comments`, `--keep-embedded`, `--keep-thumbnails`.
 - `.pre-commit-hooks.yaml` for use as a git hook.
-- 110 tests, 90% line and branch coverage; CI on Linux and Windows with Python
+- 111 tests, 90% line and branch coverage; CI on Linux and Windows with Python
   3.10, 3.12 and 3.13.
 
 ### Known limitations

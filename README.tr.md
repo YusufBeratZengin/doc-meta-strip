@@ -36,7 +36,7 @@ yok, Poppler yok, ExifTool yok.
 
 ```bash
 $ doc-meta-strip scan sunum.docx
-⚠️  sunum.docx — 16 sensitive metadata item(s) (office)
+⚠️  sunum.docx — 17 sensitive metadata item(s) (office)
       • Descriptive metadata [core:title]: Fake Internal Title
       • Author / identity [core:creator]: Fake Author
       • Author / identity [core:lastModifiedBy]: Fake Author
@@ -49,15 +49,16 @@ $ doc-meta-strip scan sunum.docx
       • Author / identity [custom:Reviewer]: Fake Author
       • Embedded thumbnail [office:thumbnail]: embedded preview image docProps/thumbnail.jpeg
       • Comment [office:word/comments.xml]: comments part (docx)
+      • Author / identity [office:comment_author]: Fake Author
       • Comment [office:comment_text]: internal comment text
       • Editing history [word:tracked-deletion]: deleted secret
       • Comment [word:comment-anchor]: 2 comment reference(s)
       • Editing history [word:rsid]: 1 revision-save id block(s)
 
-1 file(s) scanned, 1 with metadata, 16 item(s) found
+1 file(s) scanned, 1 with metadata, 17 item(s) found
 
 $ doc-meta-strip clean sunum.docx --in-place
-✅ sunum.docx: 16 item(s) removed (4309 → 2577 bytes, in place)
+✅ sunum.docx: 17 item(s) removed (4309 → 2577 bytes, in place)
       • Descriptive metadata [core:title]: Fake Internal Title
       • Author / identity [core:creator]: Fake Author
       • Author / identity [core:lastModifiedBy]: Fake Author
@@ -70,12 +71,13 @@ $ doc-meta-strip clean sunum.docx --in-place
       • Author / identity [custom:Reviewer]: Fake Author
       • Embedded thumbnail [office:thumbnail]: embedded preview image docProps/thumbnail.jpeg
       • Comment [office:word/comments.xml]: comments part (docx)
+      • Author / identity [office:comment_author]: Fake Author
       • Comment [office:comment_text]: internal comment text
       • Editing history [word:tracked-deletion]: deleted secret
       • Comment [word:comment-anchor]: 2 comment reference(s)
       • Editing history [word:rsid]: 1 revision-save id block(s)
 
-1 file(s), 1 cleaned, 0 already clean, 16 item(s) removed
+1 file(s), 1 cleaned, 0 already clean, 17 item(s) removed
 
 $ doc-meta-strip scan sunum.docx
 ✔ sunum.docx: clean (office)

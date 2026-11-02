@@ -210,6 +210,13 @@ def test_comment_author_and_text_reported(xlsx_file: Path) -> None:
     assert any(finding.key == "office:comment_text" for finding in findings)
 
 
+def test_docx_comment_author_attribute_reported(docx_file: Path) -> None:
+    """Word keeps the comment author in a w:author attribute, not an element."""
+    _, findings, _ = _clean(docx_file.read_bytes())
+    authors = [finding.value for finding in findings if finding.key == "office:comment_author"]
+    assert FAKE_AUTHOR in authors
+
+
 def test_minimal_docx_without_docprops(tmp_path: Path) -> None:
     path = tmp_path / "bare.docx"
     with zipfile.ZipFile(path, "w") as archive:
