@@ -55,9 +55,10 @@ an individual is officially representing the community in public spaces.
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behaviour may be
-reported to the maintainer through the contact address in `pyproject.toml` or via
-a private GitHub report on this repository. All complaints will be reviewed and
-investigated promptly and fairly.
+reported to the maintainer via a private GitHub report on this repository
+("Security" → "Report a vulnerability" is also fine for conduct reports that must
+stay private). All complaints will be reviewed and investigated promptly and
+fairly.
 
 All community leaders are obligated to respect the privacy and security of the
 reporter of any incident.

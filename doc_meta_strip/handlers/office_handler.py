@@ -16,7 +16,14 @@ import zipfile
 from typing import Any
 from xml.etree import ElementTree as ET
 
-from ..base import CorruptFileError, Finding, Handler, UnsupportedFormatError, shorten
+from ..base import (
+    CleanOptions,
+    CorruptFileError,
+    Finding,
+    Handler,
+    UnsupportedFormatError,
+    shorten,
+)
 
 __all__ = ["OfficeHandler"]
 
@@ -203,9 +210,9 @@ class OfficeHandler(Handler):
 
     # ---------------------------------------------------------------- inspect
 
-    def inspect(self, data: bytes, options: Any = None) -> tuple[bytes, list[Finding], list[str]]:
-        from ..base import CleanOptions
-
+    def inspect(
+        self, data: bytes, options: CleanOptions | None = None
+    ) -> tuple[bytes, list[Finding], list[str]]:
         opts = options or CleanOptions()
         try:
             archive = zipfile.ZipFile(io.BytesIO(data))
@@ -341,6 +348,13 @@ class OfficeHandler(Handler):
                 authors.append(element.text.strip())
             elif tag == "t" and element.text and element.text.strip():
                 text.append(element.text.strip())
+            # Word stores the comment author in a w:author attribute, not in a
+            # child element; missing it would leave a personal name out of the
+            # audit report even though the part is deleted.
+            for attribute in ("author", "userId"):
+                raw = element.attrib.get(qname(NS_W, attribute)) or element.attrib.get(attribute)
+                if raw and raw.strip():
+                    authors.append(raw.strip())
         findings = [
             Finding(
                 key=f"office:{name}",

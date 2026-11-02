@@ -11,10 +11,10 @@ import subprocess
 from collections.abc import Sequence
 from pathlib import Path
 
-from .base import CleanOptions
+from .base import CleanOptions, DocMetaStripError
 from .engine import FileOutcome, UsageError, clean_file
 
-__all__ = ["restage", "staged_paths"]
+__all__ = ["clean_staged", "restage", "staged_paths"]
 
 
 def _git(root: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
@@ -54,7 +54,12 @@ def clean_staged(
     outcomes: list[FileOutcome] = []
     changed: list[Path] = []
     for path in targets:
-        outcome = clean_file(path, options, in_place=True, backup=False)
+        try:
+            outcome = clean_file(path, options, in_place=True, backup=False)
+        except DocMetaStripError as exc:
+            # One broken staged file must not stop the hook from cleaning the rest.
+            outcomes.append(FileOutcome(path=path, file_format="unknown", status="error", error=str(exc)))
+            continue
         outcomes.append(outcome)
         if outcome.status == "cleaned":
             changed.append(path)

@@ -123,8 +123,10 @@ def run_scan(args: argparse.Namespace) -> int:
         except DocMetaStripError as exc:
             results.append(ScanResult(path=path, file_format="unknown", error=str(exc)))
 
-    if not args.quiet and not args.json:
+    if not args.json:
         for result in results:
+            if args.quiet and result.ok:
+                continue
             _print_findings(result)
 
     report = build_scan_report(results)
@@ -149,13 +151,16 @@ def run_clean(args: argparse.Namespace) -> int:
 
     if args.staged:
         outcomes, restaged = clean_staged(options)
-        if not args.quiet:
+        if not args.json:
             for outcome in outcomes:
+                if args.quiet and outcome.ok:
+                    continue
                 _print_outcome(outcome)
-            if restaged:
-                print(f"\u2705 re-staged {len(restaged)} file(s) in git")
-            elif not outcomes:
-                print("\u2714 no supported files are staged")
+            if not args.quiet:
+                if restaged:
+                    print(f"\u2705 re-staged {len(restaged)} file(s) in git")
+                elif not outcomes:
+                    print("\u2714 no supported files are staged")
     else:
         if not args.paths:
             raise UsageError("clean needs a file, a directory, or --staged")
@@ -180,8 +185,10 @@ def run_clean(args: argparse.Namespace) -> int:
                 )
             except DocMetaStripError as exc:
                 outcomes.append(FileOutcome(path=path, file_format="unknown", status="error", error=str(exc)))
-        if not args.quiet and not args.json:
+        if not args.json:
             for outcome in outcomes:
+                if args.quiet and outcome.ok:
+                    continue
                 _print_outcome(outcome)
 
     report = build_clean_report(outcomes)

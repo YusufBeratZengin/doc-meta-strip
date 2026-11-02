@@ -191,7 +191,10 @@ def clean_file(
             # The copy the user asked for still has to exist, even when the
             # input was already clean.
             copied_to = Path(output)
-            _write_atomic(copied_to, data)
+            try:
+                _write_atomic(copied_to, data)
+            except OSError as exc:
+                raise DocMetaStripError(f"cannot write {copied_to}: {exc}") from exc
         return FileOutcome(
             path=source,
             file_format=handler.name,
@@ -204,13 +207,16 @@ def clean_file(
         )
 
     backup_path: Path | None = None
-    if destination != source:
-        _write_atomic(destination, cleaned)
-    else:
-        if backup:
-            backup_path = _backup_path(source)
-            shutil.copy2(source, backup_path)
-        _write_atomic(destination, cleaned)
+    try:
+        if destination != source:
+            _write_atomic(destination, cleaned)
+        else:
+            if backup:
+                backup_path = _backup_path(source)
+                shutil.copy2(source, backup_path)
+            _write_atomic(destination, cleaned)
+    except OSError as exc:
+        raise DocMetaStripError(f"cannot write {destination}: {exc}") from exc
 
     if backup_path is not None:
         warnings.append(f"original saved as {backup_path.name}")

@@ -46,20 +46,34 @@ $ doc-meta-strip scan sunum.docx
       • Author / identity [app:Manager]: Fake Author
       • Internal file path [app:HyperlinkBase]: C:\Users\fake\Documents\internal
       • Internal file path [custom:ClientPath]: C:\Users\fake\Documents\internal
+      • Author / identity [custom:Reviewer]: Fake Author
       • Embedded thumbnail [office:thumbnail]: embedded preview image docProps/thumbnail.jpeg
       • Comment [office:word/comments.xml]: comments part (docx)
+      • Comment [office:comment_text]: internal comment text
       • Editing history [word:tracked-deletion]: deleted secret
+      • Comment [word:comment-anchor]: 2 comment reference(s)
       • Editing history [word:rsid]: 1 revision-save id block(s)
-      • …
 
 1 file(s) scanned, 1 with metadata, 16 item(s) found
 
 $ doc-meta-strip clean sunum.docx --in-place
 ✅ sunum.docx: 16 item(s) removed (4309 → 2577 bytes, in place)
+      • Descriptive metadata [core:title]: Fake Internal Title
       • Author / identity [core:creator]: Fake Author
+      • Author / identity [core:lastModifiedBy]: Fake Author
+      • Editing history [core:revision]: 7
+      • Software fingerprint [app:Application]: Fake Office 16.0
+      • Organisation [app:Company]: Example Corp
+      • Author / identity [app:Manager]: Fake Author
       • Internal file path [app:HyperlinkBase]: C:\Users\fake\Documents\internal
+      • Internal file path [custom:ClientPath]: C:\Users\fake\Documents\internal
+      • Author / identity [custom:Reviewer]: Fake Author
+      • Embedded thumbnail [office:thumbnail]: embedded preview image docProps/thumbnail.jpeg
+      • Comment [office:word/comments.xml]: comments part (docx)
+      • Comment [office:comment_text]: internal comment text
       • Editing history [word:tracked-deletion]: deleted secret
-      • …
+      • Comment [word:comment-anchor]: 2 comment reference(s)
+      • Editing history [word:rsid]: 1 revision-save id block(s)
 
 1 file(s), 1 cleaned, 0 already clean, 16 item(s) removed
 
@@ -149,7 +163,7 @@ Rapor, OSINT savunmasının kanıtıdır: hangi kişisel verinin hangi dosyadan
 
 ## Pre-commit entegrasyonu
 
-Paket `.pre-commit-hooks.yaml` ile gelir; depoya eklemeniz gereken tek şey:
+Depo `.pre-commit-hooks.yaml` ile gelir; projeye eklemeniz gereken tek şey:
 
 ```yaml
 # .pre-commit-config.yaml
@@ -178,6 +192,20 @@ commit edilemez. Aynı davranışı elle de kullanabilirsiniz:
   Ardından erişilebilirlik taraması yapılıp artık referans verilmeyen tüm nesneler
   boşaltılır; böylece silinen XMP paketinin sahipsiz bir kopyası dosya baytlarında
   kalmaz (test, çıktının ham baytlarında sızan dizeleri arar).
+
+## Bağımlılıklar
+
+İki çalışma zamanı bağımlılığı; ikisi de izin verici lisanslı ve tekerlek (wheel)
+olarak hazır:
+
+| Paket | Lisans | Neden burada |
+| --- | --- | --- |
+| [`pypdf`](https://pypi.org/project/pypdf/) | BSD-3-Clause | PDF nesne grafiğini yeniden yazmak (Info sözlüğü, XMP referansı, ad ağaçları, açıklamalar) elle yapılacak iş değil; pypdf içerik akışlarını aynen kopyalar ve sonrasında erişilemeyen nesneleri temizlememize izin verir. |
+| [`Pillow`](https://pypi.org/project/Pillow/) | MIT-CMU | **Yalnızca okuma**; `scan` "bir APP1 bloğu" yerine `Fake Author` yazabilsin diye EXIF etiketlerini çözer. Silme işlemi Pillow'dan geçmez, piksellerin bit düzeyinde aynı kalmasının nedeni budur. |
+
+Geri kalan her şey — ZIP, XML, JPEG işaretçileri, PNG parçaları, WebP RIFF ve
+komut satırı — standart kütüphanedir. Kurulacak `exiftool`, `poppler`, `cairo`
+veya `libmagic` yok; Windows ve `pre-commit` kurulumlarını sıkıcı kılan da budur.
 
 ## Neden `mat2` veya `exiftool` değil?
 

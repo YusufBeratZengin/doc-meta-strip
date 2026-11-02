@@ -249,3 +249,22 @@ def test_staged_outside_git_repository(
     monkeypatch.chdir(tmp_path)
     assert main(["clean", "--staged"]) == EXIT_ERROR
     assert "git diff failed" in capsys.readouterr().err
+
+
+def test_unwritable_output_is_reported(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    source = make_jpeg(tmp_path / "photo.jpg")
+    assert main(["clean", str(source), "-o", str(tmp_path)]) == EXIT_ERROR
+    assert "cannot write" in capsys.readouterr().err
+
+
+def test_staged_file_with_broken_content_does_not_stop_the_hook(
+    git_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    broken = git_repo / "broken.jpg"
+    broken.write_bytes(b"definitely not a jpeg")
+    good = make_jpeg(git_repo / "photo.jpg")
+    subprocess.run(["git", "-C", str(git_repo), "add", "broken.jpg", "photo.jpg"], check=True)
+
+    assert main(["clean", "--staged", "--quiet"]) == EXIT_ERROR
+    assert "unsupported file format" in capsys.readouterr().err
+    assert FAKE_AUTHOR.encode() not in good.read_bytes()

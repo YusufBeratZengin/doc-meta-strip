@@ -13,7 +13,7 @@ import struct
 import zlib
 from typing import Any
 
-from ..base import CorruptFileError, Finding, Handler, shorten
+from ..base import CleanOptions, CorruptFileError, Finding, Handler, shorten
 
 __all__ = ["ImageHandler"]
 
@@ -253,7 +253,9 @@ class ImageHandler(Handler):
             data[:4] == b"RIFF" and data[8:12] == b"WEBP"
         )
 
-    def inspect(self, data: bytes, options: Any = None) -> tuple[bytes, list[Finding], list[str]]:
+    def inspect(
+        self, data: bytes, options: CleanOptions | None = None
+    ) -> tuple[bytes, list[Finding], list[str]]:
         if data.startswith(b"\xff\xd8"):
             return self._strip_jpeg(data)
         if data.startswith(PNG_SIGNATURE):

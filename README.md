@@ -42,20 +42,34 @@ $ doc-meta-strip scan sunum.docx
       • Author / identity [app:Manager]: Fake Author
       • Internal file path [app:HyperlinkBase]: C:\Users\fake\Documents\internal
       • Internal file path [custom:ClientPath]: C:\Users\fake\Documents\internal
+      • Author / identity [custom:Reviewer]: Fake Author
       • Embedded thumbnail [office:thumbnail]: embedded preview image docProps/thumbnail.jpeg
       • Comment [office:word/comments.xml]: comments part (docx)
+      • Comment [office:comment_text]: internal comment text
       • Editing history [word:tracked-deletion]: deleted secret
+      • Comment [word:comment-anchor]: 2 comment reference(s)
       • Editing history [word:rsid]: 1 revision-save id block(s)
-      • …
 
 1 file(s) scanned, 1 with metadata, 16 item(s) found
 
 $ doc-meta-strip clean sunum.docx --in-place
 ✅ sunum.docx: 16 item(s) removed (4309 → 2577 bytes, in place)
+      • Descriptive metadata [core:title]: Fake Internal Title
       • Author / identity [core:creator]: Fake Author
+      • Author / identity [core:lastModifiedBy]: Fake Author
+      • Editing history [core:revision]: 7
+      • Software fingerprint [app:Application]: Fake Office 16.0
+      • Organisation [app:Company]: Example Corp
+      • Author / identity [app:Manager]: Fake Author
       • Internal file path [app:HyperlinkBase]: C:\Users\fake\Documents\internal
+      • Internal file path [custom:ClientPath]: C:\Users\fake\Documents\internal
+      • Author / identity [custom:Reviewer]: Fake Author
+      • Embedded thumbnail [office:thumbnail]: embedded preview image docProps/thumbnail.jpeg
+      • Comment [office:word/comments.xml]: comments part (docx)
+      • Comment [office:comment_text]: internal comment text
       • Editing history [word:tracked-deletion]: deleted secret
-      • …
+      • Comment [word:comment-anchor]: 2 comment reference(s)
+      • Editing history [word:rsid]: 1 revision-save id block(s)
 
 1 file(s), 1 cleaned, 0 already clean, 16 item(s) removed
 
@@ -145,7 +159,7 @@ removed from *which* file, so the sanitisation can be reviewed later.
 
 ## Pre-commit integration
 
-`.pre-commit-hooks.yaml` is shipped with the package, so a repository only needs:
+`.pre-commit-hooks.yaml` ships in the repository, so a project only needs:
 
 ```yaml
 # .pre-commit-config.yaml
@@ -173,6 +187,19 @@ same behaviour is available manually: `doc-meta-strip clean --staged`.
   A reachability sweep then blanks every object that is no longer referenced, so
   no orphaned copy of the removed XMP packet survives in the file bytes (this is
   tested by scanning the raw output for the leaked strings).
+
+## Dependencies
+
+Two runtime dependencies, both permissive and pure Python or pre-built wheels:
+
+| Package | License | Why it is here |
+| --- | --- | --- |
+| [`pypdf`](https://pypi.org/project/pypdf/) | BSD-3-Clause | Rewriting a PDF object graph (Info dictionary, XMP reference, name trees, annotations) is not something to hand-roll; pypdf copies content streams verbatim and lets us sweep unreachable objects afterwards. |
+| [`Pillow`](https://pypi.org/project/Pillow/) | MIT-CMU | **Read-only**, used to decode EXIF tag values so `scan` can report `Fake Author` instead of "an APP1 segment". Removal never goes through Pillow, which is why pixels stay bit-identical. |
+
+Everything else — ZIP, XML, JPEG markers, PNG chunks, WebP RIFF, the CLI — is
+the standard library. There is no `exiftool`, `poppler`, `cairo` or `libmagic`
+to install, which is what keeps Windows and `pre-commit` installs boring.
 
 ## Why not `mat2` or `exiftool`?
 

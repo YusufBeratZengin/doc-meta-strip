@@ -14,8 +14,7 @@ Fixes are released as patch versions on the `0.1.x` line until `0.2.0` ships.
 Please **do not** open a public issue for a security problem.
 
 Use GitHub's private vulnerability reporting on this repository
-("Security" → "Report a vulnerability"), or email the maintainer listed in
-`pyproject.toml`. Include:
+("Security" → "Report a vulnerability"). Include:
 
 * affected version (`doc-meta-strip --version`),
 * a description of the impact,
