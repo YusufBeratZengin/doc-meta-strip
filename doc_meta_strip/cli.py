@@ -78,6 +78,46 @@ def _options(args: argparse.Namespace) -> CleanOptions:
     )
 
 
+def _resolved(path: Path) -> Path:
+    try:
+        return path.resolve()
+    except OSError:  # pragma: no cover - unreadable parent directory
+        return path.absolute()
+
+
+def _reject_report_collisions(
+    report: str | None,
+    targets: Sequence[Path],
+    outputs: Sequence[Path] = (),
+    backup_sources: Sequence[Path] = (),
+) -> None:
+    """Refuse a report path that would overwrite an input, output or backup.
+
+    ``scan belge.pdf --report belge.pdf`` used to replace the document with
+    JSON.  The check runs before any file is read or written.
+    """
+    if not report or report == "-":
+        return
+    destination = Path(report)
+    resolved_report = _resolved(destination)
+    for protected in [*targets, *outputs]:
+        if resolved_report == _resolved(protected):
+            raise UsageError(f"--report would overwrite {protected}; choose a different report path")
+    for source in backup_sources:
+        backup_name = source.name + ".bak"
+        if _resolved(destination.parent) == _resolved(source.parent) and destination.name.startswith(
+            backup_name
+        ):
+            raise UsageError(
+                f"--report would overwrite the backup of {source}; choose a different report path"
+            )
+
+
+def _report_goes_to_stdout(args: argparse.Namespace) -> bool:
+    """True when stdout must carry JSON only (``--json`` or ``--report -``)."""
+    return bool(args.json) or args.report == "-"
+
+
 def _print_findings(result: ScanResult) -> None:
     if not result.ok:
         print(f"\u274c {result.path}: {result.error}", file=sys.stderr)
@@ -116,6 +156,7 @@ def run_scan(args: argparse.Namespace) -> int:
         raise UsageError("scan needs at least one file or directory")
     options = _options(args)
     targets = collect_targets([Path(p) for p in args.paths], recursive=not args.no_recursive)
+    _reject_report_collisions(args.report, targets)
     results: list[ScanResult] = []
     for path in targets:
         try:
@@ -123,7 +164,8 @@ def run_scan(args: argparse.Namespace) -> int:
         except DocMetaStripError as exc:
             results.append(ScanResult(path=path, file_format="unknown", error=str(exc)))
 
-    if not args.json:
+    json_stdout = _report_goes_to_stdout(args)
+    if not json_stdout:
         for result in results:
             if args.quiet and result.ok:
                 continue
@@ -134,7 +176,7 @@ def run_scan(args: argparse.Namespace) -> int:
         write_report(report, args.report)
     if args.json:
         write_report(report, "-")
-    elif not args.quiet:
+    elif not json_stdout and not args.quiet:
         print()
         print(summarize(report))
 
@@ -151,7 +193,8 @@ def run_clean(args: argparse.Namespace) -> int:
 
     if args.staged:
         outcomes, restaged = clean_staged(options)
-        if not args.json:
+        json_stdout = _report_goes_to_stdout(args)
+        if not json_stdout:
             for outcome in outcomes:
                 if args.quiet and outcome.ok:
                     continue
@@ -169,6 +212,14 @@ def run_clean(args: argparse.Namespace) -> int:
             raise UsageError("-o/--output accepts a single input file; use --in-place for batches")
         if not args.output and not args.in_place:
             raise UsageError("choose an output with -o/--output or use --in-place")
+        destinations = [Path(args.output)] if args.output else []
+        _reject_report_collisions(
+            args.report,
+            targets,
+            destinations,
+            targets if args.backup else [],
+        )
+        json_stdout = _report_goes_to_stdout(args)
 
         outcomes = []
         for path in targets:
@@ -185,7 +236,7 @@ def run_clean(args: argparse.Namespace) -> int:
                 )
             except DocMetaStripError as exc:
                 outcomes.append(FileOutcome(path=path, file_format="unknown", status="error", error=str(exc)))
-        if not args.json:
+        if not json_stdout:
             for outcome in outcomes:
                 if args.quiet and outcome.ok:
                     continue
@@ -196,7 +247,7 @@ def run_clean(args: argparse.Namespace) -> int:
         write_report(report, args.report)
     if args.json:
         write_report(report, "-")
-    elif not args.quiet and outcomes:
+    elif not json_stdout and not args.quiet and outcomes:
         print()
         print(summarize(report))
 

@@ -268,3 +268,50 @@ def test_staged_file_with_broken_content_does_not_stop_the_hook(
     assert main(["clean", "--staged", "--quiet"]) == EXIT_ERROR
     assert "unsupported file format" in capsys.readouterr().err
     assert FAKE_AUTHOR.encode() not in good.read_bytes()
+
+
+def test_scan_report_cannot_overwrite_input(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    source = make_jpeg(tmp_path / "photo.jpg")
+    original = source.read_bytes()
+
+    assert main(["scan", str(source), "--report", str(source)]) == EXIT_ERROR
+    assert "would overwrite" in capsys.readouterr().err
+    assert source.read_bytes() == original
+
+
+def test_clean_report_cannot_overwrite_output(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    source = make_jpeg(tmp_path / "photo.jpg")
+    target = tmp_path / "clean.jpg"
+
+    assert main(["clean", str(source), "-o", str(target), "--report", str(target)]) == EXIT_ERROR
+    assert "would overwrite" in capsys.readouterr().err
+    assert not target.exists()
+
+
+def test_clean_report_cannot_overwrite_backup(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    source = make_jpeg(tmp_path / "photo.jpg")
+    original = source.read_bytes()
+
+    backup = tmp_path / "photo.jpg.bak"
+
+    assert main(["clean", str(source), "--in-place", "--backup", "--report", str(backup)]) == EXIT_ERROR
+    assert "would overwrite the backup" in capsys.readouterr().err
+    assert source.read_bytes() == original
+
+
+def test_report_dash_keeps_stdout_json_only(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    source = make_jpeg(tmp_path / "photo.jpg")
+
+    assert main(["clean", str(source), "--in-place", "--report", "-"]) == EXIT_OK
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["mode"] == "clean"
+    assert payload["summary"]["cleaned"] == 1
+
+
+def test_unwritable_report_path_is_reported(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    source = make_jpeg(tmp_path / "photo.jpg")
+    blocker = tmp_path / "not-a-file"
+    blocker.mkdir()
+
+    assert main(["clean", str(source), "--in-place", "--report", str(blocker), "--quiet"]) == EXIT_ERROR
+    assert "cannot write report" in capsys.readouterr().err

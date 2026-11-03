@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `--report` no longer accepts a path that would overwrite an input, an `-o`
+  output, or a `--backup` copy; the run stops with a clear error before writing.
+- `--report -` and `--json` keep stdout machine-readable: human progress lines
+  and the summary are suppressed so the JSON parses on its own.
+- An unwritable `--report` destination is reported as a normal error instead of
+  a traceback.
+- Removed an unused `staged_paths` import that failed `ruff check`.
+
 ### Planned
 - EPUB metadata support (see issue #3)
 - Streaming mode for very large PDFs

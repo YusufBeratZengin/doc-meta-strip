@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import __version__
-from .base import ScanResult
+from .base import DocMetaStripError, ScanResult
 from .engine import FileOutcome
 
 __all__ = ["build_clean_report", "build_scan_report", "summarize", "write_report"]
@@ -93,12 +93,19 @@ def summarize(report: dict[str, object]) -> str:
 
 
 def write_report(report: dict[str, object], destination: str | Path) -> None:
-    """Write ``report`` as JSON to a path, or to stdout when ``destination`` is ``-``."""
+    """Write ``report`` as JSON to a path, or to stdout when ``destination`` is ``-``.
+
+    Any filesystem failure is translated into :class:`DocMetaStripError` so the
+    CLI reports a controlled error instead of a traceback.
+    """
     payload = json.dumps(report, indent=2, ensure_ascii=False, sort_keys=False)
     if str(destination) == "-":
         sys.stdout.write(payload + "\n")
         return
     path = Path(destination)
-    if path.parent and not path.parent.exists():
-        path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(payload + "\n", encoding="utf-8")
+    try:
+        if path.parent and not path.parent.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(payload + "\n", encoding="utf-8")
+    except OSError as exc:
+        raise DocMetaStripError(f"cannot write report {path}: {exc}") from exc
