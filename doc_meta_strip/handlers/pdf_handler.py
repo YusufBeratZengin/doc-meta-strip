@@ -66,8 +66,8 @@ class PdfHandler(Handler):
     ) -> tuple[bytes, list[Finding], list[str]]:
         opts = options or CleanOptions()
         reader = self._open(data, opts.password)
-        findings, kept_info = self._collect_findings(reader, opts)
         warnings: list[str] = []
+        findings, kept_info = self._collect_findings(reader, opts, warnings)
         if reader.is_encrypted:
             warnings.append("input was encrypted; the cleaned copy is not password protected")
         if not findings:
@@ -93,8 +93,12 @@ class PdfHandler(Handler):
         return reader
 
     def _collect_findings(
-        self, reader: PdfReader, opts: CleanOptions
+        self,
+        reader: PdfReader,
+        opts: CleanOptions,
+        warnings: list[str] | None = None,
     ) -> tuple[list[Finding], dict[str, Any]]:
+        warn_list = warnings if warnings is not None else []
         findings: list[Finding] = []
         kept_info: dict[str, Any] = {}
         info = self._info_dict(reader)
@@ -127,7 +131,8 @@ class PdfHandler(Handler):
                 stream = raw.get_object() if isinstance(raw, IndirectObject) else raw
                 if isinstance(stream, StreamObject):
                     packet = stream.get_data()
-            except Exception:  # pragma: no cover - broken XMP stream
+            except Exception as exc:
+                warn_list.append(f"damaged PDF XMP stream removed without parsing: {exc}")
                 packet = b""
             findings.extend(
                 xmp_findings(packet)
@@ -149,8 +154,33 @@ class PdfHandler(Handler):
                                 category="thumbnail",
                             )
                         )
-            except Exception:  # pragma: no cover - damaged page tree
-                pass
+            except Exception as exc:
+                raise CorruptFileError(f"damaged PDF page tree while inspecting thumbnails: {exc}") from exc
+
+        if opts.remove_embedded:
+            try:
+                for number, page in enumerate(reader.pages, start=1):
+                    annots = page.get("/Annots")
+                    if isinstance(annots, IndirectObject):
+                        annots = annots.get_object()
+                    if not isinstance(annots, ArrayObject):
+                        continue
+                    for ref in annots:
+                        annotation = ref.get_object() if isinstance(ref, IndirectObject) else ref
+                        if not isinstance(annotation, DictionaryObject):
+                            continue
+                        subtype = str(annotation.get("/Subtype", ""))
+                        if subtype in {"/FileAttachment", "/Movie", "/Sound"}:
+                            kind = subtype.lstrip("/")
+                            findings.append(
+                                Finding(
+                                    key=f"pdf:annotation:{kind}",
+                                    value=f"page {number} {kind} annotation",
+                                    category="embedded",
+                                )
+                            )
+            except Exception as exc:
+                raise CorruptFileError(f"damaged PDF page tree while inspecting annotations: {exc}") from exc
 
         if root is not None and "/PieceInfo" in root:
             findings.append(Finding(key="pdf:PieceInfo", value="application private data", category="other"))
@@ -160,8 +190,8 @@ class PdfHandler(Handler):
     def _info_dict(reader: PdfReader) -> DictionaryObject | None:
         try:
             info = reader.metadata
-        except Exception:  # pragma: no cover - malformed Info dictionary
-            return None
+        except Exception as exc:
+            raise CorruptFileError(f"damaged PDF Info dictionary: {exc}") from exc
         if not info:
             return None
         return DictionaryObject({NameObject(str(k)): v for k, v in info.items()})
@@ -172,20 +202,32 @@ class PdfHandler(Handler):
         try:
             for name in reader.attachments:
                 findings.append(Finding(key="pdf:attachment", value=shorten(str(name)), category="embedded"))
-        except Exception:  # pragma: no cover - malformed name tree
-            pass
+        except Exception as exc:
+            raise CorruptFileError(f"damaged PDF attachment tree: {exc}") from exc
         if root is not None and "/Names" in root:
-            names = root["/Names"]
-            if isinstance(names, IndirectObject):
-                names = names.get_object()
-            if isinstance(names, DictionaryObject) and "/EmbeddedFiles" in names and not findings:
-                findings.append(
-                    Finding(
-                        key="pdf:embedded-files",
-                        value="embedded file name tree",
-                        category="embedded",
+            try:
+                names = root["/Names"]
+                if isinstance(names, IndirectObject):
+                    names = names.get_object()
+            except Exception as exc:
+                raise CorruptFileError(f"damaged PDF /Names dictionary: {exc}") from exc
+            if isinstance(names, DictionaryObject):
+                if "/EmbeddedFiles" in names and not findings:
+                    findings.append(
+                        Finding(
+                            key="pdf:embedded-files",
+                            value="embedded file name tree",
+                            category="embedded",
+                        )
                     )
-                )
+                if "/JavaScript" in names:
+                    findings.append(
+                        Finding(
+                            key="pdf:javascript",
+                            value="embedded JavaScript name tree",
+                            category="embedded",
+                        )
+                    )
         return findings
 
     @staticmethod
@@ -195,8 +237,8 @@ class PdfHandler(Handler):
             root = raw.get_object() if isinstance(raw, IndirectObject) else raw
             if isinstance(root, DictionaryObject):
                 return root
-        except Exception:  # pragma: no cover - broken trailer
-            return None
+        except Exception as exc:
+            raise CorruptFileError(f"damaged PDF trailer /Root: {exc}") from exc
         return None
 
     # ---------------------------------------------------------------- rewrite

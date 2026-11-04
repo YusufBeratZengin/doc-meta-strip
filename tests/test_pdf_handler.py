@@ -154,3 +154,73 @@ def test_sniffing_requires_pdf_header() -> None:
 def test_fixture_helper_is_readable(tmp_path: Path) -> None:
     path = make_pdf(tmp_path / "helper.pdf")
     assert PdfReader(str(path)).pages[0].extract_text() == "Hello world"
+
+
+def test_damaged_page_tree_during_thumbnail_inspection_raises(
+    pdf_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken_pages(_self: PdfReader) -> list[object]:
+        raise RuntimeError("corrupt /Pages tree")
+
+    monkeypatch.setattr(PdfReader, "pages", property(broken_pages))
+    with pytest.raises(CorruptFileError, match="damaged PDF page tree while inspecting thumbnails"):
+        _clean(pdf_file.read_bytes())
+    with pytest.raises(CorruptFileError, match="damaged PDF page tree while inspecting annotations"):
+        _clean(pdf_file.read_bytes(), remove_thumbnails=False)
+
+
+def test_damaged_info_dictionary_raises(pdf_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def broken_metadata(_self: PdfReader) -> object:
+        raise RuntimeError("corrupt /Info object")
+
+    monkeypatch.setattr(PdfReader, "metadata", property(broken_metadata))
+    with pytest.raises(CorruptFileError, match="damaged PDF Info dictionary"):
+        _clean(pdf_file.read_bytes())
+
+
+def test_damaged_attachment_tree_raises(pdf_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def broken_attachments(_self: PdfReader) -> object:
+        raise RuntimeError("corrupt /EmbeddedFiles name tree")
+
+    monkeypatch.setattr(PdfReader, "attachments", property(broken_attachments))
+    with pytest.raises(CorruptFileError, match="damaged PDF attachment tree"):
+        _clean(pdf_file.read_bytes())
+
+
+def test_damaged_xmp_stream_warns_and_strips(pdf_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from pypdf.generic import StreamObject
+
+    def broken_get_data(_self: StreamObject) -> bytes:
+        raise RuntimeError("corrupt XMP stream")
+
+    monkeypatch.setattr(StreamObject, "get_data", broken_get_data)
+    _, findings, warnings = _clean(pdf_file.read_bytes(), remove_thumbnails=False, remove_embedded=False)
+    assert any(finding.key == "pdf:XMP" for finding in findings)
+    assert any("damaged PDF XMP stream removed without parsing" in w for w in warnings)
+
+
+def test_damaged_trailer_root_raises(pdf_file: Path) -> None:
+    corrupted = pdf_file.read_bytes().replace(b"/Root", b"/Noop")
+    with pytest.raises(CorruptFileError, match="damaged PDF trailer /Root"):
+        _clean(corrupted)
+
+
+def test_damaged_names_dictionary_raises(pdf_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from pypdf.generic import IndirectObject
+
+    original_get_object = IndirectObject.get_object
+
+    def broken_get_object(self: IndirectObject) -> object:
+        if self.idnum == 99:
+            raise RuntimeError("corrupt /Names indirect object")
+        return original_get_object(self)
+
+    monkeypatch.setattr(PdfReader, "attachments", property(lambda _self: {}))
+    monkeypatch.setattr(
+        PdfHandler,
+        "_root",
+        staticmethod(lambda _reader: {"/Names": IndirectObject(99, 0, None)}),
+    )
+    monkeypatch.setattr(IndirectObject, "get_object", broken_get_object)
+    with pytest.raises(CorruptFileError, match="damaged PDF /Names dictionary"):
+        _clean(pdf_file.read_bytes(), remove_thumbnails=False)
