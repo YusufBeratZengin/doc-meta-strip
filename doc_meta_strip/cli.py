@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import getpass
+import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 
 from . import __version__
-from .base import CleanOptions, DocMetaStripError, ScanResult
+from .base import CleanOptions, DocMetaStripError, ScanResult, finding_label
 from .engine import FileOutcome, UsageError, clean_file, collect_targets, scan_file
-from .hook import clean_staged
+from .hook import clean_staged, staged_targets
 from .report import build_clean_report, build_scan_report, summarize, write_report
 
 EXIT_OK = 0
@@ -27,7 +29,7 @@ examples:
 exit codes:
   0  success
   1  one or more files could not be processed
-  3  --strict was given and sensitive metadata was found
+  3  --strict was given and sensitive metadata was found (or removed)
 """
 
 
@@ -35,11 +37,30 @@ def _add_common_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("paths", nargs="*", metavar="PATH", help="file or directory to process")
     parser.add_argument("--json", action="store_true", help="print the JSON report to stdout")
     parser.add_argument("--report", metavar="FILE", help="write a JSON audit report to FILE ('-' for stdout)")
-    parser.add_argument("--strict", action="store_true", help="exit 3 when sensitive metadata is found")
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="exit 3 when sensitive metadata is found (or removed by clean)",
+    )
     parser.add_argument("--no-recursive", action="store_true", help="do not descend into subdirectories")
     parser.add_argument("--quiet", "-q", action="store_true", help="only print problems")
     parser.add_argument("--strip-dates", action="store_true", help="also remove creation/modification dates")
-    parser.add_argument("--password", metavar="TEXT", help="password for encrypted PDF input")
+    parser.add_argument(
+        "--password",
+        metavar="TEXT",
+        help="password for encrypted PDF input ('-' to read from stdin)",
+    )
+    parser.add_argument(
+        "--ask-password",
+        action="store_true",
+        help="interactively prompt for the PDF password",
+    )
+    parser.add_argument(
+        "--lang",
+        choices=["en", "tr"],
+        default=None,
+        help="user interface language (en, tr; default: en or DOC_META_STRIP_LANG)",
+    )
     parser.add_argument("--keep-comments", action="store_true", help="keep Office comments")
     parser.add_argument("--keep-embedded", action="store_true", help="keep embedded files and attachments")
     parser.add_argument("--keep-thumbnails", action="store_true", help="keep embedded preview thumbnails")
@@ -68,13 +89,43 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _resolve_password(args: argparse.Namespace) -> str | None:
+    if getattr(args, "ask_password", False):
+        try:
+            return getpass.getpass("Enter PDF password: ")
+        except (EOFError, KeyboardInterrupt):
+            raise UsageError("password prompt aborted") from None
+    password = getattr(args, "password", None)
+    if password == "-":
+        try:
+            line = sys.stdin.readline()
+            return line.rstrip("\r\n")
+        except (EOFError, KeyboardInterrupt):
+            raise UsageError("password input aborted") from None
+    if isinstance(password, str):
+        return password
+    return os.environ.get("DOC_META_STRIP_PASSWORD")
+
+
+def _resolve_lang(args: argparse.Namespace) -> str:
+    lang = getattr(args, "lang", None)
+    if lang == "tr":
+        return "tr"
+    if lang == "en":
+        return "en"
+    env_lang = os.environ.get("DOC_META_STRIP_LANG", "").lower()
+    if env_lang in ("tr", "turkish", "tr_tr"):
+        return "tr"
+    return "en"
+
+
 def _options(args: argparse.Namespace) -> CleanOptions:
     return CleanOptions(
         strip_dates=args.strip_dates,
         remove_comments=not args.keep_comments,
         remove_embedded=not args.keep_embedded,
         remove_thumbnails=not args.keep_thumbnails,
-        password=args.password,
+        password=_resolve_password(args),
     )
 
 
@@ -118,35 +169,52 @@ def _report_goes_to_stdout(args: argparse.Namespace) -> bool:
     return bool(args.json) or args.report == "-"
 
 
-def _print_findings(result: ScanResult) -> None:
+def _emit_report(report: dict[str, object], args: argparse.Namespace) -> None:
+    """Write the audit report to its file and/or stdout, never twice."""
+    if args.report and args.report != "-":
+        write_report(report, args.report)
+    if _report_goes_to_stdout(args):
+        write_report(report, "-")
+
+
+def _print_findings(result: ScanResult, lang: str = "en") -> None:
     if not result.ok:
         print(f"\u274c {result.path}: {result.error}", file=sys.stderr)
         return
     if not result.findings:
-        print(f"\u2714 {result.path}: clean ({result.file_format})")
+        label = "temiz" if lang == "tr" else "clean"
+        print(f"\u2714 {result.path}: {label} ({result.file_format})")
         return
-    print(
-        f"\u26a0\ufe0f  {result.path} \u2014 {len(result.findings)} sensitive metadata item(s) "
-        f"({result.file_format})"
-    )
+    items_label = "hassas üstveri öğesi" if lang == "tr" else "sensitive metadata item(s)"
+    print(f"\u26a0\ufe0f  {result.path} \u2014 {len(result.findings)} {items_label} ({result.file_format})")
     for finding in result.findings:
-        print(f"      \u2022 {finding.label} [{finding.key}]: {finding.value}")
+        flabel = finding_label(finding, lang=lang)
+        print(f"      \u2022 {flabel} [{finding.key}]: {finding.value}")
 
 
-def _print_outcome(outcome: FileOutcome) -> None:
+def _print_outcome(outcome: FileOutcome, lang: str = "en") -> None:
     if not outcome.ok:
         print(f"\u274c {outcome.path}: {outcome.error}", file=sys.stderr)
         return
     if outcome.status == "clean":
-        print(f"\u2714 {outcome.path}: no metadata to remove")
+        label = "kaldırılacak üstveri yok" if lang == "tr" else "no metadata to remove"
+        print(f"\u2714 {outcome.path}: {label}")
         return
-    target = f"{outcome.output}" if outcome.output != outcome.path else "in place"
-    print(
-        f"\u2705 {outcome.path}: {len(outcome.removed)} item(s) removed "
-        f"({outcome.bytes_before} \u2192 {outcome.bytes_after} bytes, {target})"
-    )
+    if lang == "tr":
+        target = f"{outcome.output}" if outcome.output != outcome.path else "aynı dosya üzerine"
+        print(
+            f"\u2705 {outcome.path}: {len(outcome.removed)} öğe temizlendi "
+            f"({outcome.bytes_before} \u2192 {outcome.bytes_after} bayt, {target})"
+        )
+    else:
+        target = f"{outcome.output}" if outcome.output != outcome.path else "in place"
+        print(
+            f"\u2705 {outcome.path}: {len(outcome.removed)} item(s) removed "
+            f"({outcome.bytes_before} \u2192 {outcome.bytes_after} bytes, {target})"
+        )
     for finding in outcome.removed:
-        print(f"      \u2022 {finding.label} [{finding.key}]: {finding.value}")
+        flabel = finding_label(finding, lang=lang)
+        print(f"      \u2022 {flabel} [{finding.key}]: {finding.value}")
     for warning in outcome.warnings:
         print(f"      \u2139 {warning}")
 
@@ -154,6 +222,7 @@ def _print_outcome(outcome: FileOutcome) -> None:
 def run_scan(args: argparse.Namespace) -> int:
     if not args.paths:
         raise UsageError("scan needs at least one file or directory")
+    lang = _resolve_lang(args)
     options = _options(args)
     targets = collect_targets([Path(p) for p in args.paths], recursive=not args.no_recursive)
     _reject_report_collisions(args.report, targets)
@@ -169,16 +238,13 @@ def run_scan(args: argparse.Namespace) -> int:
         for result in results:
             if args.quiet and result.ok:
                 continue
-            _print_findings(result)
+            _print_findings(result, lang=lang)
 
     report = build_scan_report(results)
-    if args.report:
-        write_report(report, args.report)
-    if args.json:
-        write_report(report, "-")
-    elif not json_stdout and not args.quiet:
+    _emit_report(report, args)
+    if not json_stdout and not args.quiet:
         print()
-        print(summarize(report))
+        print(summarize(report, lang=lang))
 
     has_errors = any(not result.ok for result in results)
     if has_errors:
@@ -189,21 +255,36 @@ def run_scan(args: argparse.Namespace) -> int:
 
 
 def run_clean(args: argparse.Namespace) -> int:
+    lang = _resolve_lang(args)
     options = _options(args)
 
     if args.staged:
-        outcomes, restaged = clean_staged(options)
+        # Discover the index contents first: ``--report`` must never be allowed
+        # to overwrite a document that is about to be cleaned.
+        targets = staged_targets()
+        _reject_report_collisions(args.report, targets)
+        outcomes, restaged = clean_staged(options, targets=targets)
         json_stdout = _report_goes_to_stdout(args)
         if not json_stdout:
             for outcome in outcomes:
                 if args.quiet and outcome.ok:
                     continue
-                _print_outcome(outcome)
+                _print_outcome(outcome, lang=lang)
             if not args.quiet:
                 if restaged:
-                    print(f"\u2705 re-staged {len(restaged)} file(s) in git")
+                    msg = (
+                        f"\u2705 git indeksinde {len(restaged)} dosya yeniden sahnelendi"
+                        if lang == "tr"
+                        else f"\u2705 re-staged {len(restaged)} file(s) in git"
+                    )
+                    print(msg)
                 elif not outcomes:
-                    print("\u2714 no supported files are staged")
+                    msg = (
+                        "\u2714 desteklenen sahnelenmiş dosya yok"
+                        if lang == "tr"
+                        else "\u2714 no supported files are staged"
+                    )
+                    print(msg)
     else:
         if not args.paths:
             raise UsageError("clean needs a file, a directory, or --staged")
@@ -240,21 +321,40 @@ def run_clean(args: argparse.Namespace) -> int:
             for outcome in outcomes:
                 if args.quiet and outcome.ok:
                     continue
-                _print_outcome(outcome)
+                _print_outcome(outcome, lang=lang)
 
     report = build_clean_report(outcomes)
-    if args.report:
-        write_report(report, args.report)
-    if args.json:
-        write_report(report, "-")
-    elif not json_stdout and not args.quiet and outcomes:
+    _emit_report(report, args)
+    if not json_stdout and not args.quiet and outcomes:
         print()
-        print(summarize(report))
+        print(summarize(report, lang=lang))
 
-    return EXIT_OK if all(outcome.ok for outcome in outcomes) else EXIT_ERROR
+    has_errors = any(not outcome.ok for outcome in outcomes)
+    if has_errors:
+        return EXIT_ERROR
+    if args.strict and any(outcome.removed for outcome in outcomes):
+        return EXIT_METADATA
+    return EXIT_OK
+
+
+def _configure_stdio() -> None:
+    """Ensure Unicode symbols and file names never crash on legacy Windows codepages."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not callable(reconfigure):
+            continue
+        try:
+            encoding = getattr(stream, "encoding", None) or "utf-8"
+            if encoding.lower().replace("-", "") != "utf8":
+                reconfigure(encoding="utf-8", errors="replace")
+            else:
+                reconfigure(errors="replace")
+        except Exception:  # pragma: no cover - non-standard stream wrapper
+            pass
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    _configure_stdio()
     parser = build_parser()
     args = parser.parse_args(argv)
     try:

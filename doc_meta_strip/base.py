@@ -15,6 +15,7 @@ from typing import ClassVar
 
 __all__ = [
     "CATEGORY_LABELS",
+    "CATEGORY_LABELS_TR",
     "CleanOptions",
     "CorruptFileError",
     "DocMetaStripError",
@@ -24,6 +25,7 @@ __all__ = [
     "ScanResult",
     "UnsupportedFormatError",
     "WrongPasswordError",
+    "finding_label",
     "shorten",
 ]
 
@@ -64,6 +66,33 @@ CATEGORY_LABELS: dict[str, str] = {
     "description": "Descriptive metadata",
     "other": "Other metadata",
 }
+
+CATEGORY_LABELS_TR: dict[str, str] = {
+    "gps": "GPS konumu",
+    "identity": "Yazar / kimlik",
+    "organization": "Kurum / organizasyon",
+    "path": "Dahili dosya yolu",
+    "revision": "Düzenleme geçmişi",
+    "software": "Yazılım parmak izi",
+    "timestamp": "Zaman damgası",
+    "thumbnail": "Gömülü küçük resim",
+    "embedded": "Gömülü dosya",
+    "comment": "Yorum",
+    "text": "Gizli metin parçası",
+    "device": "Cihaz kimliği",
+    "description": "Açıklayıcı üstveri",
+    "other": "Diğer üstveri",
+}
+
+
+def finding_label(finding: Finding, lang: str = "en") -> str:
+    """Localized label for a finding."""
+    if lang == "tr":
+        return CATEGORY_LABELS_TR.get(
+            finding.category, CATEGORY_LABELS.get(finding.category, finding.category)
+        )
+    return finding.label
+
 
 MAX_VALUE_LEN = 200
 

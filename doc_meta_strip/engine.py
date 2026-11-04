@@ -124,7 +124,13 @@ def collect_targets(paths: Iterable[Path], recursive: bool = True) -> list[Path]
             for candidate in iterator:
                 if not candidate.is_file():
                     continue
-                if any(part in SKIP_DIRECTORIES for part in candidate.parts):
+                # Only directories *inside* the scanned root are skipped: an
+                # ancestor called ``venv`` must not hide the whole tree.
+                try:
+                    parts = candidate.relative_to(path).parts
+                except ValueError:  # pragma: no cover - rglob always prefixes path
+                    parts = candidate.parts
+                if any(part in SKIP_DIRECTORIES for part in parts[:-1]):
                     continue
                 if candidate.suffix.lower() in SUPPORTED_SUFFIXES:
                     targets.append(candidate)
@@ -144,6 +150,13 @@ def _backup_path(path: Path) -> Path:
     return candidate
 
 
+def _default_file_mode() -> int:
+    """Mode a new file would get from ``open()``: ``0o666`` minus the umask."""
+    current = os.umask(0)
+    os.umask(current)
+    return 0o666 & ~current
+
+
 def _write_atomic(destination: Path, payload: bytes) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     handle, temp_name = tempfile.mkstemp(prefix=".doc-meta-strip-", dir=str(destination.parent))
@@ -152,6 +165,10 @@ def _write_atomic(destination: Path, payload: bytes) -> None:
             stream.write(payload)
         if destination.exists():
             shutil.copymode(destination, temp_name)
+        else:
+            # mkstemp always creates 0o600; a newly written document should be
+            # readable like any other file the user creates.
+            os.chmod(temp_name, _default_file_mode())
         os.replace(temp_name, destination)
     except BaseException:
         Path(temp_name).unlink(missing_ok=True)

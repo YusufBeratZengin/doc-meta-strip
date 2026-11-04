@@ -71,24 +71,44 @@ def build_scan_report(results: Iterable[ScanResult]) -> dict[str, object]:
     }
 
 
-def summarize(report: dict[str, object]) -> str:
+def summarize(report: dict[str, object], lang: str = "en") -> str:
     """One line, human readable summary of a report dictionary."""
     summary = report.get("summary", {})
     if not isinstance(summary, dict):
         return ""
     mode = report.get("mode")
+    files = summary.get("files", 0)
+    errors = summary.get("errors", 0)
+    if lang == "tr":
+        err_msg = f", {errors} hata" if errors else ""
+        if mode == "scan":
+            with_meta = summary.get("with_metadata", 0)
+            items = summary.get("items_found", 0)
+            return (
+                f"{files} dosya tarandı, "
+                f"{with_meta} dosyada üstveri bulundu, "
+                f"{items} öğe tespit edildi{err_msg}"
+            )
+        cleaned = summary.get("cleaned", 0)
+        already_clean = summary.get("already_clean", 0)
+        items = summary.get("items_removed", 0)
+        return (
+            f"{files} dosya, {cleaned} temizlendi, "
+            f"{already_clean} zaten temiz, "
+            f"{items} öğe temizlendi{err_msg}"
+        )
+
+    err_msg = f", {errors} error(s)" if errors else ""
     if mode == "scan":
         return (
-            f"{summary.get('files', 0)} file(s) scanned, "
+            f"{files} file(s) scanned, "
             f"{summary.get('with_metadata', 0)} with metadata, "
-            f"{summary.get('items_found', 0)} item(s) found"
-            + (f", {summary['errors']} error(s)" if summary.get("errors") else "")
+            f"{summary.get('items_found', 0)} item(s) found{err_msg}"
         )
     return (
-        f"{summary.get('files', 0)} file(s), {summary.get('cleaned', 0)} cleaned, "
+        f"{files} file(s), {summary.get('cleaned', 0)} cleaned, "
         f"{summary.get('already_clean', 0)} already clean, "
-        f"{summary.get('items_removed', 0)} item(s) removed"
-        + (f", {summary['errors']} error(s)" if summary.get("errors") else "")
+        f"{summary.get('items_removed', 0)} item(s) removed{err_msg}"
     )
 
 
