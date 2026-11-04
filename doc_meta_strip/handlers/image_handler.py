@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import struct
+import warnings
 import zlib
 from typing import Any
 
@@ -18,13 +19,21 @@ from ..base import CleanOptions, CorruptFileError, Finding, Handler, shorten
 __all__ = ["ImageHandler"]
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+MAX_PNG_TEXT_DECOMPRESS_BYTES = 64 * 1024
 
 #: PNG chunks that carry human readable or machine readable metadata.
 PNG_METADATA_CHUNKS = frozenset({b"tEXt", b"zTXt", b"iTXt", b"eXIf", b"tIME", b"dSIG"})
 
-#: APPn markers that must survive: JFIF (APP0), ICC colour profile (APP2) and
-#: the Adobe colour transform marker (APP14) which some CMYK decoders require.
-JPEG_KEPT_APP_MARKERS = frozenset({0xE0, 0xE2, 0xEE})
+#: APPn markers that must survive, keyed by the identifier their payload must
+#: start with.  APP0 is only kept for JFIF (a ``JFXX`` APP0 carries an embedded
+#: thumbnail and was previously preserved verbatim); APP2 only for an ICC
+#: colour profile (``MPF`` and FlashPix live there too); APP14 only for Adobe,
+#: whose colour transform some CMYK decoders require.
+JPEG_KEPT_APP_PAYLOADS: dict[int, bytes] = {
+    0xE0: b"JFIF\x00",
+    0xE2: b"ICC_PROFILE\x00",
+    0xEE: b"Adobe",
+}
 
 JPEG_SOF_MARKERS = frozenset({0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF})
 
@@ -202,8 +211,10 @@ def read_exif(data: bytes) -> Any:
     except ImportError:  # pragma: no cover - Pillow is a hard dependency
         return None
     try:
-        with Image.open(io.BytesIO(data)) as image:
-            return image.getexif()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            with Image.open(io.BytesIO(data)) as image:
+                return image.getexif()
     except Exception:
         return None
 
@@ -276,9 +287,7 @@ class ImageHandler(Handler):
         saw_scan = False
         while index < size:
             if data[index] != 0xFF:
-                # Not a marker: preserve the remainder untouched.
-                out += data[index:]
-                break
+                raise CorruptFileError("corrupt JPEG marker stream")
             segment_start = index
             cursor = index + 1
             while cursor < size and data[cursor] == 0xFF:
@@ -289,7 +298,17 @@ class ImageHandler(Handler):
             if marker == 0xD9:  # EOI
                 if not saw_scan:
                     raise CorruptFileError("JPEG has no image data (missing SOS)")
-                out += data[segment_start:]
+                out += data[segment_start : cursor + 1]
+                trailing = data[cursor + 1 :]
+                if trailing:
+                    saw_metadata_segment = True
+                    findings.append(
+                        Finding(
+                            key="jpeg:trailing_data",
+                            value=f"{len(trailing)} bytes trailing data stripped",
+                            category="other",
+                        )
+                    )
                 break
             if marker == 0x01 or 0xD0 <= marker <= 0xD8:
                 out += data[segment_start : cursor + 1]
@@ -304,16 +323,38 @@ class ImageHandler(Handler):
             if segment_end > size:
                 raise CorruptFileError("JPEG segment runs past end of file")
             segment = data[segment_start:segment_end]
-            if marker == 0xDA:  # SOS: entropy coded data follows verbatim
+            if marker == 0xDA:  # SOS: entropy coded data follows
                 saw_scan = True
                 out += segment
-                out += data[segment_end:]
-                break
+                scan_cursor = segment_end
+                while scan_cursor < size:
+                    if data[scan_cursor] != 0xFF:
+                        scan_cursor += 1
+                        continue
+                    peek = scan_cursor + 1
+                    while peek < size and data[peek] == 0xFF:
+                        peek += 1
+                    if peek >= size:
+                        raise CorruptFileError("truncated JPEG marker in scan data")
+                    marker_after_scan = data[peek]
+                    if marker_after_scan == 0x00 or 0xD0 <= marker_after_scan <= 0xD7:
+                        # 0x00 is stuffed byte; 0xD0..0xD7 are restart markers (RST0..RST7)
+                        scan_cursor = peek + 1
+                        continue
+                    break
+                else:
+                    raise CorruptFileError("JPEG scan data without terminating marker")
+                out += data[segment_end:scan_cursor]
+                index = scan_cursor
+                continue
             keep = True
-            if 0xE0 <= marker <= 0xEF and marker not in JPEG_KEPT_APP_MARKERS:
-                keep = False
-                saw_metadata_segment = True
-                findings.extend(self._jpeg_app_findings(marker, segment))
+            if 0xE0 <= marker <= 0xEF:
+                payload = segment[4:]
+                required = JPEG_KEPT_APP_PAYLOADS.get(marker)
+                if required is None or not payload.startswith(required):
+                    keep = False
+                    saw_metadata_segment = True
+                    findings.extend(self._jpeg_app_findings(marker, segment))
             elif marker == 0xFE:
                 keep = False
                 saw_metadata_segment = True
@@ -328,8 +369,10 @@ class ImageHandler(Handler):
             if keep:
                 out += segment
             index = segment_end
-        else:  # loop finished without SOS/EOI
-            raise CorruptFileError("JPEG has no image data (missing SOS)")
+        else:  # loop finished without reaching EOI
+            if not saw_scan:
+                raise CorruptFileError("JPEG has no image data (missing SOS)")
+            raise CorruptFileError("truncated JPEG file (missing EOI)")
 
         findings.extend(exif_findings(read_exif(data)))
         if saw_metadata_segment and not findings:
@@ -346,6 +389,16 @@ class ImageHandler(Handler):
         if marker == 0xE1 and payload.startswith(b"http://ns.adobe.com/xap/1.0/\x00"):
             packet = payload[len(b"http://ns.adobe.com/xap/1.0/\x00") :]
             return xmp_findings(packet)
+        if marker == 0xE0 and payload.startswith(b"JFXX\x00"):
+            return [Finding(key="jpeg:JFXX", value="JFXX extension thumbnail", category="thumbnail")]
+        if marker == 0xE2 and payload.startswith(b"MPF\x00"):
+            return [
+                Finding(
+                    key="jpeg:MPF",
+                    value="multi-picture index (extra images attached)",
+                    category="embedded",
+                )
+            ]
         if marker == 0xED:
             return [Finding(key="jpeg:APP13", value="IPTC / Photoshop resource block", category="other")]
         if marker == 0xEC:
@@ -393,7 +446,15 @@ class ImageHandler(Handler):
             raise CorruptFileError("PNG is missing the IHDR chunk")
         if not seen_iend:
             raise CorruptFileError("PNG is truncated (no IEND chunk)")
-        out += data[offset:]
+        trailing = data[offset:]
+        if trailing:
+            findings.append(
+                Finding(
+                    key="png:trailing_data",
+                    value=f"{len(trailing)} bytes trailing data stripped",
+                    category="other",
+                )
+            )
         exif = exif_findings(read_exif(data))
         findings.extend(exif)
         if saw_exif and not exif:
@@ -414,23 +475,14 @@ class ImageHandler(Handler):
         if chunk_type == b"tEXt":
             text = rest
         elif chunk_type == b"zTXt" and len(rest) >= 1:
-            text = rest[1:]
-            try:
-                text = zlib.decompress(text)
-            except zlib.error:
-                text = b""
+            text = _decompress_bounded(rest[1:])
         elif chunk_type == b"iTXt" and len(rest) >= 2:
             compressed = rest[0] == 1
             payload = rest[2:]
             # language tag and translated keyword are NUL separated
             _, _, payload = payload.partition(b"\x00")
             _, _, payload = payload.partition(b"\x00")
-            text = payload
-            if compressed:
-                try:
-                    text = zlib.decompress(text)
-                except zlib.error:
-                    text = b""
+            text = _decompress_bounded(payload) if compressed else payload
         name = keyword.decode("latin-1", "replace").strip()
         category = PNG_TEXT_CATEGORIES.get(name.lower(), "text")
         value = _stringify(text) or f"{chunk_type.decode('ascii')} chunk"
@@ -496,9 +548,25 @@ class ImageHandler(Handler):
         result = bytearray(b"RIFF")
         result += struct.pack("<I", len(body))
         result += body
+        if len(data) > end:
+            findings.append(
+                Finding(
+                    key="webp:trailing_data",
+                    value=f"{len(data) - end} bytes trailing data stripped",
+                    category="other",
+                )
+            )
         if not findings:
             warnings.append("no removable WebP chunks found")
         return bytes(result), _dedupe(findings), warnings
+
+
+def _decompress_bounded(payload: bytes, limit: int = MAX_PNG_TEXT_DECOMPRESS_BYTES) -> bytes:
+    """Decompress at most ``limit`` bytes of a PNG text chunk for report preview."""
+    try:
+        return zlib.decompressobj().decompress(payload, limit)
+    except zlib.error:
+        return b""
 
 
 def _dedupe(findings: list[Finding]) -> list[Finding]:

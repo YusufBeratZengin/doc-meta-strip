@@ -191,3 +191,134 @@ def test_make_webp_helper_roundtrip(tmp_path: Path) -> None:
 def test_unsupported_extension_is_rejected() -> None:
     with pytest.raises(UnsupportedFormatError):
         handler_for(Path("notes.txt"), b"hello")
+
+
+def _plain_jpeg() -> bytes:
+    buffer = io.BytesIO()
+    Image.new("RGB", (16, 16), (3, 4, 5)).save(buffer, "JPEG", quality=70)
+    return buffer.getvalue()
+
+
+def _with_app(data: bytes, marker: int, payload: bytes) -> bytes:
+    """Insert an APPn segment right after SOI."""
+    segment = bytes([0xFF, marker]) + (len(payload) + 2).to_bytes(2, "big") + payload
+    return data[:2] + segment + data[2:]
+
+
+def test_jpeg_jfxx_thumbnail_and_mpf_are_removed() -> None:
+    """APP0 is only kept for JFIF, APP2 only for an ICC profile.
+
+    A ``JFXX`` APP0 carries a thumbnail and an ``MPF`` APP2 indexes extra
+    images; both used to survive cleaning and were not even reported.
+    """
+    data = _with_app(_plain_jpeg(), 0xE0, b"JFXX\x00\x10FAKE-THUMBNAIL-BYTES")
+    data = _with_app(data, 0xE2, b"MPF\x00FAKE-SECOND-IMAGE-INDEX")
+
+    cleaned, findings, _ = _clean(data)
+    keys = {finding.key for finding in findings}
+
+    assert "jpeg:JFXX" in keys
+    assert "jpeg:MPF" in keys
+    assert any(finding.category == "thumbnail" for finding in findings)
+    assert b"FAKE-THUMBNAIL-BYTES" not in cleaned
+    assert b"FAKE-SECOND-IMAGE-INDEX" not in cleaned
+    with Image.open(io.BytesIO(cleaned)) as image:
+        assert image.size == (16, 16)
+
+
+def test_jpeg_jfif_and_icc_profile_are_preserved() -> None:
+    jfif = b"JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
+    icc = b"ICC_PROFILE\x00\x01\x01fake-profile"
+    data = _with_app(_plain_jpeg(), 0xE0, jfif)
+    data = _with_app(data, 0xE2, icc)
+
+    cleaned, findings, _ = _clean(data)
+
+    assert b"JFIF\x00" in cleaned
+    assert b"ICC_PROFILE\x00" in cleaned
+    assert findings == []
+
+
+def test_jpeg_progressive_multi_scan_keeps_pixels_bit_identical() -> None:
+    buffer = io.BytesIO()
+    Image.new("RGB", (32, 32), (10, 20, 30)).save(buffer, "JPEG", progressive=True)
+    data = buffer.getvalue()
+    assert data.count(b"\xff\xda") > 1
+
+    cleaned, _, _ = _clean(data)
+    with Image.open(io.BytesIO(data)) as before, Image.open(io.BytesIO(cleaned)) as after:
+        assert before.tobytes() == after.tobytes()
+
+
+def test_jpeg_strips_metadata_markers_between_scans() -> None:
+    buffer = io.BytesIO()
+    Image.new("RGB", (32, 32), (10, 20, 30)).save(buffer, "JPEG", progressive=True)
+    data = buffer.getvalue()
+    first_sos = data.find(b"\xff\xda")
+    sos_len = int.from_bytes(data[first_sos + 2 : first_sos + 4], "big")
+    cursor = first_sos + 2 + sos_len
+    while cursor < len(data):
+        if data[cursor] == 0xFF and data[cursor + 1] not in (
+            0x00,
+            0xD0,
+            0xD1,
+            0xD2,
+            0xD3,
+            0xD4,
+            0xD5,
+            0xD6,
+            0xD7,
+        ):
+            break
+        cursor += 1
+    payload = b"secret-author-note"
+    comment = b"\xff\xfe" + (len(payload) + 2).to_bytes(2, "big") + payload
+    injected = data[:cursor] + comment + data[cursor:]
+
+    cleaned, findings, _ = _clean(injected)
+    keys = {finding.key for finding in findings}
+    assert "jpeg:COM" in keys
+    assert b"secret-author-note" not in cleaned
+    with (
+        Image.open(io.BytesIO(injected)) as before,
+        Image.open(io.BytesIO(cleaned)) as after,
+    ):
+        assert before.tobytes() == after.tobytes()
+
+
+def test_jpeg_trailing_data_stripped_and_reported() -> None:
+    data = _plain_jpeg() + b"SECRET_TRAILING_JUNK"
+    cleaned, findings, _ = _clean(data)
+    keys = {finding.key for finding in findings}
+    assert "jpeg:trailing_data" in keys
+    assert b"SECRET_TRAILING_JUNK" not in cleaned
+    with Image.open(io.BytesIO(cleaned)) as after:
+        assert after.size == (16, 16)
+
+
+def test_jpeg_truncated_scan_raises_corrupt() -> None:
+    data = _plain_jpeg()
+    first_sos = data.find(b"\xff\xda")
+    truncated = data[: first_sos + 15]
+    with pytest.raises(CorruptFileError):
+        _clean(truncated)
+
+
+def test_png_trailing_data_stripped_and_reported(png_file: Path) -> None:
+    data = png_file.read_bytes() + b"SECRET_OVERLAY_BYTES"
+    cleaned, findings, _ = _clean(data)
+    keys = {finding.key for finding in findings}
+    assert "png:trailing_data" in keys
+    assert b"SECRET_OVERLAY_BYTES" not in cleaned
+    with Image.open(io.BytesIO(cleaned)) as after:
+        assert after.format == "PNG"
+
+
+def test_webp_trailing_data_reported(webp_file: Path) -> None:
+    data = webp_file.read_bytes() + b"SECRET_WEBP_TRAILING"
+    cleaned, findings, _ = _clean(data)
+    keys = {finding.key for finding in findings}
+    assert "webp:trailing_data" in keys
+    assert b"SECRET_WEBP_TRAILING" not in cleaned
+    with Image.open(io.BytesIO(cleaned)) as after:
+        assert after.format == "WEBP"
