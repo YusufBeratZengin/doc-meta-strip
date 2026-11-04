@@ -224,8 +224,10 @@ def test_password_can_come_from_prompt_stdin_or_environment(
         return "fake-password"
 
     monkeypatch.setattr(cli.getpass, "getpass", fake_getpass)
-    assert main(["clean", str(prompted), "--in-place", "--ask-password", "--quiet"]) == EXIT_OK
-    assert seen  # the prompt was actually used instead of a command-line value
+    assert (
+        main(["clean", str(prompted), "--in-place", "--ask-password", "--lang", "tr", "--quiet"]) == EXIT_OK
+    )
+    assert seen and "PDF parolası" in seen[0]  # prompt used, not an argv value
     assert FAKE_AUTHOR.encode() not in prompted.read_bytes()
 
     from_stdin = make_encrypted_pdf(tmp_path / "stdin.pdf", password="fake-password")

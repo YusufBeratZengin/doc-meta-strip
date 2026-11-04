@@ -83,7 +83,9 @@ class PdfHandler(Handler):
             raise CorruptFileError(f"not a readable PDF: {exc}") from exc
         if reader.is_encrypted:
             if not password:
-                raise PasswordRequiredError("PDF is password protected; pass --password to clean it")
+                raise PasswordRequiredError(
+                    "PDF is password protected; pass --password, --password - or --ask-password to clean it"
+                )
             try:
                 result = reader.decrypt(password)
             except Exception as exc:  # pypdf raises several error types here

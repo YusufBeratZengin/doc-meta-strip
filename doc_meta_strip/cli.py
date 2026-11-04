@@ -48,7 +48,7 @@ def _add_common_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--password",
         metavar="TEXT",
-        help="password for encrypted PDF input ('-' to read from stdin)",
+        help="password for encrypted PDF input ('-' reads stdin; prefer --ask-password)",
     )
     parser.add_argument(
         "--ask-password",
@@ -91,8 +91,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _resolve_password(args: argparse.Namespace) -> str | None:
     if getattr(args, "ask_password", False):
+        prompt = "PDF parolası: " if _resolve_lang(args) == "tr" else "Enter PDF password: "
         try:
-            return getpass.getpass("Enter PDF password: ")
+            return getpass.getpass(prompt)
         except (EOFError, KeyboardInterrupt):
             raise UsageError("password prompt aborted") from None
     password = getattr(args, "password", None)
