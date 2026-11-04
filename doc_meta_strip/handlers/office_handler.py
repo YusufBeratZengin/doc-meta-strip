@@ -13,6 +13,7 @@ import io
 import posixpath
 import re
 import zipfile
+import zlib
 from typing import Any
 from xml.etree import ElementTree as ET
 
@@ -25,7 +26,17 @@ from ..base import (
     shorten,
 )
 
-__all__ = ["OfficeHandler"]
+__all__ = [
+    "MAX_ARCHIVE_ENTRIES",
+    "MAX_PART_BYTES",
+    "MAX_TOTAL_UNCOMPRESSED_BYTES",
+    "OfficeHandler",
+]
+
+MAX_ARCHIVE_ENTRIES = 10_000
+MAX_PART_BYTES = 64 * 1024 * 1024  # 64 MiB per uncompressed member
+MAX_TOTAL_UNCOMPRESSED_BYTES = 256 * 1024 * 1024  # 256 MiB across the archive
+_ZIP_READ_CHUNK_BYTES = 64 * 1024
 
 NS_CORE = "http://schemas.openxmlformats.org/package/2006/metadata/core-properties"
 NS_DC = "http://purl.org/dc/elements/1.1/"
@@ -102,13 +113,10 @@ W_DROP = frozenset(
         "rsids",
         "cellDel",
         "delText",
-    }
-)
-
-W_UNWRAP = frozenset(
-    {
-        "ins",
-        "moveTo",
+        # ``*PrChange`` carries a snapshot of the *previous* properties.  Merging
+        # that snapshot into the live element (an unwrap) nests e.g. ``w:rPr``
+        # inside ``w:rPr``, which is invalid OpenXML and makes Word offer to
+        # repair the document, so these are dropped whole.
         "rPrChange",
         "pPrChange",
         "sectPrChange",
@@ -117,6 +125,13 @@ W_UNWRAP = frozenset(
         "tcPrChange",
         "tblGridChange",
         "numberingChange",
+    }
+)
+
+W_UNWRAP = frozenset(
+    {
+        "ins",
+        "moveTo",
         "cellIns",
         "cellMerge",
     }
@@ -204,9 +219,89 @@ def _parse(payload: bytes) -> ET.Element:
 class OfficeHandler(Handler):
     name = "office"
     extensions = (".docx", ".xlsx", ".pptx", ".docm", ".xlsm", ".pptm")
+    max_entries: int = MAX_ARCHIVE_ENTRIES
+    max_part_bytes: int = MAX_PART_BYTES
+    max_total_bytes: int = MAX_TOTAL_UNCOMPRESSED_BYTES
+
+    def __init__(
+        self,
+        *,
+        max_entries: int | None = None,
+        max_part_bytes: int | None = None,
+        max_total_bytes: int | None = None,
+    ) -> None:
+        if max_entries is not None:
+            self.max_entries = max_entries
+        if max_part_bytes is not None:
+            self.max_part_bytes = max_part_bytes
+        if max_total_bytes is not None:
+            self.max_total_bytes = max_total_bytes
 
     def sniff(self, data: bytes) -> bool:
         return data.startswith(b"PK\x03\x04")
+
+    def _read_archive(self, data: bytes) -> tuple[dict[str, bytes], dict[str, zipfile.ZipInfo]]:
+        """Validate and unpack an OpenXML ZIP archive within memory safety bounds."""
+        try:
+            archive = zipfile.ZipFile(io.BytesIO(data))
+        except zipfile.BadZipFile as exc:
+            raise CorruptFileError(f"not a valid ZIP/OpenXML file: {exc}") from exc
+
+        infos: dict[str, zipfile.ZipInfo] = {}
+        parts: dict[str, bytes] = {}
+        total_bytes = 0
+
+        with archive:
+            entries = [info for info in archive.infolist() if not info.is_dir()]
+            if len(entries) > self.max_entries:
+                raise CorruptFileError(
+                    f"ZIP archive has too many entries ({len(entries)} > {self.max_entries})"
+                )
+            allowed_compressions = (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)
+            for info in entries:
+                if info.compress_type not in allowed_compressions:
+                    raise CorruptFileError(
+                        f"unsupported compression method in OpenXML ZIP entry {info.filename}: "
+                        f"{info.compress_type}"
+                    )
+                if info.file_size > self.max_part_bytes:
+                    raise CorruptFileError(
+                        f"ZIP entry {info.filename} exceeds maximum uncompressed size "
+                        f"({info.file_size} > {self.max_part_bytes} bytes)"
+                    )
+                if total_bytes + info.file_size > self.max_total_bytes:
+                    raise CorruptFileError(
+                        f"ZIP archive exceeds maximum total uncompressed size ({self.max_total_bytes} bytes)"
+                    )
+                chunks: list[bytes] = []
+                part_bytes = 0
+                try:
+                    with archive.open(info, "r") as stream:
+                        while chunk := stream.read(_ZIP_READ_CHUNK_BYTES):
+                            part_bytes += len(chunk)
+                            total_bytes += len(chunk)
+                            if part_bytes > self.max_part_bytes or total_bytes > self.max_total_bytes:
+                                raise CorruptFileError(
+                                    f"ZIP entry {info.filename} exceeds maximum uncompressed size"
+                                )
+                            chunks.append(chunk)
+                except CorruptFileError:
+                    raise
+                except (
+                    zipfile.BadZipFile,
+                    zipfile.LargeZipFile,
+                    zlib.error,
+                    EOFError,
+                    RuntimeError,
+                    ValueError,
+                    NotImplementedError,
+                    OSError,
+                ) as exc:
+                    raise CorruptFileError(f"corrupt ZIP entry: {info.filename}") from exc
+                infos[info.filename] = info
+                parts[info.filename] = b"".join(chunks)
+
+        return parts, infos
 
     # ---------------------------------------------------------------- inspect
 
@@ -214,17 +309,7 @@ class OfficeHandler(Handler):
         self, data: bytes, options: CleanOptions | None = None
     ) -> tuple[bytes, list[Finding], list[str]]:
         opts = options or CleanOptions()
-        try:
-            archive = zipfile.ZipFile(io.BytesIO(data))
-        except zipfile.BadZipFile as exc:
-            raise CorruptFileError(f"not a valid ZIP/OpenXML file: {exc}") from exc
-
-        with archive:
-            bad = archive.testzip()
-            if bad is not None:
-                raise CorruptFileError(f"corrupt ZIP entry: {bad}")
-            infos = {info.filename: info for info in archive.infolist() if not info.is_dir()}
-            parts = {name: archive.read(info) for name, info in infos.items()}
+        parts, infos = self._read_archive(data)
 
         kind = self._detect_kind(parts)
         if kind is None:
@@ -289,9 +374,20 @@ class OfficeHandler(Handler):
                     )
                     dropped.add(name)
 
-        transform_targets = [name for name in parts if name.startswith("word/") and name.endswith(".xml")]
+        transform_targets = [
+            name
+            for name in parts
+            if name.startswith("word/")
+            and name.endswith(".xml")
+            and name not in dropped
+            and not self._is_comment_part(name)
+        ]
         for name in transform_targets:
-            new_payload, part_findings = self._sanitize_word_part(parts[name])
+            new_payload, part_findings = self._sanitize_word_part(
+                parts[name],
+                name=name,
+                remove_comments=opts.remove_comments,
+            )
             if part_findings:
                 findings.extend(part_findings)
                 parts[name] = new_payload
@@ -300,7 +396,7 @@ class OfficeHandler(Handler):
         removed_rel_ids = self._drop_relationships(parts, dropped)
         for part_name, ids in removed_rel_ids.items():
             if part_name in parts and ids:
-                parts[part_name] = self._drop_dangling_references(parts[part_name], ids)
+                parts[part_name] = self._drop_dangling_references(parts[part_name], ids, name=part_name)
 
         for name in dropped:
             parts.pop(name, None)
@@ -340,8 +436,8 @@ class OfficeHandler(Handler):
         text: list[str] = []
         try:
             root = _parse(payload)
-        except ET.ParseError:
-            return [Finding(key=f"office:{name}", value="comment part", category="comment")]
+        except ET.ParseError as exc:
+            raise CorruptFileError(f"{name} is not well formed: {exc}") from exc
         for element in root.iter():
             tag = localname(element.tag)
             if tag in {"author", "initials"} and element.text and element.text.strip():
@@ -442,13 +538,19 @@ class OfficeHandler(Handler):
 
     # --------------------------------------------------------------- Word XML
 
-    def _sanitize_word_part(self, payload: bytes) -> tuple[bytes, list[Finding]]:
+    def _sanitize_word_part(
+        self,
+        payload: bytes,
+        name: str = "word/document.xml",
+        remove_comments: bool = True,
+    ) -> tuple[bytes, list[Finding]]:
         try:
             root = _parse(payload)
-        except ET.ParseError:
-            return payload, []
+        except ET.ParseError as exc:
+            raise CorruptFileError(f"{name} is not well formed: {exc}") from exc
         findings: list[Finding] = []
-        stats = {"deleted": 0, "inserted": 0, "comments": 0, "rsids": 0}
+        stats = {"deleted": 0, "inserted": 0, "comments": 0, "rsids": 0, "changes": 0}
+        change_authors: list[str] = []
 
         def walk(parent: ET.Element) -> None:
             for child in list(parent):
@@ -456,6 +558,11 @@ class OfficeHandler(Handler):
                 name = localname(tag)
                 if namespace_of(tag) != NS_W:
                     walk(child)
+                    continue
+                if name in {"commentReference", "commentRangeStart", "commentRangeEnd"}:
+                    if remove_comments:
+                        stats["comments"] += 1
+                        parent.remove(child)
                     continue
                 if name in W_DROP:
                     if name == "del":
@@ -472,10 +579,16 @@ class OfficeHandler(Handler):
                                 category="revision",
                             )
                         )
-                    elif name in {"commentReference", "commentRangeStart", "commentRangeEnd"}:
-                        stats["comments"] += 1
                     elif name == "rsids":
                         stats["rsids"] += 1
+                    else:
+                        # A tracked formatting/property change: the old property
+                        # snapshot is dropped, but its author is worth reporting.
+                        if name.endswith("PrChange") or name == "numberingChange":
+                            stats["changes"] += 1
+                            author = child.attrib.get(qname(NS_W, "author"))
+                            if author and author.strip():
+                                change_authors.append(author.strip())
                     parent.remove(child)
                     continue
                 if name in W_UNWRAP:
@@ -509,6 +622,16 @@ class OfficeHandler(Handler):
                     category="revision",
                 )
             )
+        if stats["changes"]:
+            findings.append(
+                Finding(
+                    key="word:formatting-change",
+                    value=f"{stats['changes']} tracked formatting change(s)",
+                    category="revision",
+                )
+            )
+        for author in dict.fromkeys(change_authors):
+            findings.append(Finding(key="word:change_author", value=shorten(author), category="identity"))
         if not findings:
             return payload, []
         return serialize(root), findings
@@ -553,8 +676,8 @@ class OfficeHandler(Handler):
                 continue
             try:
                 root = _parse(payload)
-            except ET.ParseError:
-                continue
+            except ET.ParseError as exc:
+                raise CorruptFileError(f"{rels_name} is not well formed: {exc}") from exc
             rels = [rel for rel in root if localname(rel.tag) == "Relationship"]
             has_comments = False
             drawings: list[str] = []
@@ -582,8 +705,8 @@ class OfficeHandler(Handler):
                 continue
             try:
                 root = _parse(parts[rels_name])
-            except ET.ParseError:
-                continue
+            except ET.ParseError as exc:
+                raise CorruptFileError(f"{rels_name} is not well formed: {exc}") from exc
             source_part = posixpath.join(
                 posixpath.dirname(posixpath.dirname(rels_name)),
                 posixpath.basename(rels_name)[: -len(".rels")],
@@ -607,11 +730,11 @@ class OfficeHandler(Handler):
         return removed
 
     @staticmethod
-    def _drop_dangling_references(payload: bytes, rel_ids: list[str]) -> bytes:
+    def _drop_dangling_references(payload: bytes, rel_ids: list[str], name: str = "document.xml") -> bytes:
         try:
             root = _parse(payload)
-        except ET.ParseError:
-            return payload
+        except ET.ParseError as exc:
+            raise CorruptFileError(f"{name} is not well formed: {exc}") from exc
         parents = {child: parent for parent in root.iter() for child in parent}
         wanted = set(rel_ids)
         changed = False
@@ -644,8 +767,8 @@ class OfficeHandler(Handler):
     def _prune_content_types(payload: bytes, dropped: set[str]) -> bytes:
         try:
             root = _parse(payload)
-        except ET.ParseError:
-            return payload
+        except ET.ParseError as exc:
+            raise CorruptFileError(f"[Content_Types].xml is not well formed: {exc}") from exc
         names = {"/" + name for name in dropped}
         changed = False
         for element in list(root):

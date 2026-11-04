@@ -188,7 +188,7 @@ def test_pdf_file_attachment_annotation_removed(tmp_path: Path) -> None:
     cleaned, findings, _ = PdfHandler().clean_bytes(source.read_bytes(), CleanOptions())
     reader = PdfReader(io.BytesIO(cleaned))
     assert "/Annots" not in reader.pages[0]
-    assert findings  # /Producer: pypdf is itself a fingerprint and gets removed
+    assert any(finding.key == "pdf:annotation:FileAttachment" for finding in findings)
 
 
 def test_pdf_javascript_name_tree_removed(tmp_path: Path) -> None:
@@ -214,10 +214,11 @@ def test_pdf_javascript_name_tree_removed(tmp_path: Path) -> None:
     with source.open("wb") as handle:
         writer.write(handle)
 
-    cleaned, _, _ = PdfHandler().clean_bytes(source.read_bytes(), CleanOptions())
+    cleaned, findings, _ = PdfHandler().clean_bytes(source.read_bytes(), CleanOptions())
     reader = PdfReader(io.BytesIO(cleaned))
     assert "/Names" not in reader.root_object
     assert b"app.alert" not in cleaned
+    assert any(finding.key == "pdf:javascript" for finding in findings)
 
 
 def test_pdf_piece_info_reported(tmp_path: Path) -> None:
@@ -289,18 +290,56 @@ def test_office_external_relationship_is_preserved(tmp_path: Path) -> None:
         assert b"example.invalid" in archive.read("word/_rels/document.xml.rels")
 
 
-def test_office_malformed_part_is_left_alone(tmp_path: Path) -> None:
+def test_office_malformed_parts_raise_corrupt_file_error(tmp_path: Path) -> None:
     import zipfile
 
     path = tmp_path / "malformed.docx"
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr("word/document.xml", "<w:document not closed")
         archive.writestr("word/_rels/document.xml.rels", "<Relationships")
-    cleaned, findings, warnings = OfficeHandler().clean_bytes(path.read_bytes(), CleanOptions())
-    assert findings == []
-    assert warnings == ["no removable Office metadata found"]
-    with zipfile.ZipFile(io.BytesIO(cleaned)) as archive:
-        assert archive.read("word/document.xml") == b"<w:document not closed"
+    with pytest.raises(CorruptFileError, match="word/document.xml is not well formed"):
+        OfficeHandler().clean_bytes(path.read_bytes(), CleanOptions())
+
+    bad_rels = tmp_path / "bad_rels.docx"
+    with zipfile.ZipFile(bad_rels, "w") as archive:
+        archive.writestr(
+            "word/document.xml",
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>',
+        )
+        archive.writestr("word/_rels/document.xml.rels", "<Relationships not closed")
+    with pytest.raises(CorruptFileError, match="document.xml.rels is not well formed"):
+        OfficeHandler().clean_bytes(bad_rels.read_bytes(), CleanOptions())
+
+    bad_comments = tmp_path / "bad_comments.docx"
+    with zipfile.ZipFile(bad_comments, "w") as archive:
+        archive.writestr(
+            "word/document.xml",
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>',
+        )
+        archive.writestr("word/comments.xml", "<w:comments not closed")
+    with pytest.raises(CorruptFileError, match="word/comments.xml is not well formed"):
+        OfficeHandler().clean_bytes(bad_comments.read_bytes(), CleanOptions())
+
+    bad_ct = tmp_path / "bad_ct.docx"
+    with zipfile.ZipFile(bad_ct, "w") as archive:
+        archive.writestr(
+            "word/document.xml",
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>',
+        )
+        archive.writestr("[Content_Types].xml", "<Types not closed")
+    with pytest.raises(CorruptFileError, match=r"\[Content_Types\]\.xml is not well formed"):
+        OfficeHandler().clean_bytes(bad_ct.read_bytes(), CleanOptions())
+
+    for prop_part in ("docProps/core.xml", "docProps/app.xml", "docProps/custom.xml"):
+        bad_prop = tmp_path / f"bad_{Path(prop_part).name}"
+        with zipfile.ZipFile(bad_prop, "w") as archive:
+            archive.writestr(
+                "word/document.xml",
+                '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>',
+            )
+            archive.writestr(prop_part, "<broken")
+        with pytest.raises(CorruptFileError, match=f"{prop_part} is not well formed"):
+            OfficeHandler().clean_bytes(bad_prop.read_bytes(), CleanOptions())
 
 
 def test_module_entry_point_reports_version() -> None:

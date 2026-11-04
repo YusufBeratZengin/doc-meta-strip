@@ -88,8 +88,11 @@ def test_docx_comments_removed_and_body_intact(docx_file: Path) -> None:
 
 
 def test_docx_keep_comments_option(docx_file: Path) -> None:
-    cleaned, _, _ = _clean(docx_file.read_bytes(), remove_comments=False)
-    assert "word/comments.xml" in _parts(cleaned)
+    cleaned, findings, _ = _clean(docx_file.read_bytes(), remove_comments=False)
+    parts = _parts(cleaned)
+    assert "word/comments.xml" in parts
+    assert b"commentReference" in parts["word/document.xml"]
+    assert not any(finding.category == "comment" for finding in findings)
 
 
 def test_docx_opens_after_cleaning(docx_file: Path, tmp_path: Path) -> None:
@@ -242,3 +245,114 @@ def test_make_docx_helper_is_valid_zip(tmp_path: Path) -> None:
     with zipfile.ZipFile(path) as archive:
         assert archive.testzip() is None
     assert make_xlsx(tmp_path / "helper.xlsx").exists()
+
+
+def _docx_with_formatting_change(source: Path, target: Path) -> Path:
+    """Return a copy of ``source`` whose first run has a tracked property change."""
+    before = "<w:r><w:t>Third paragraph</w:t></w:r>"
+    after = (
+        '<w:r><w:rPr><w:b/><w:rPrChange w:id="7" w:author="Fake Author" '
+        'w:date="2026-01-01T00:00:00Z"><w:rPr><w:i/></w:rPr></w:rPrChange></w:rPr>'
+        "<w:t>Third paragraph</w:t></w:r>"
+    )
+    with zipfile.ZipFile(source) as zin, zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as zout:
+        for info in zin.infolist():
+            payload = zin.read(info)
+            if info.filename == "word/document.xml":
+                text = payload.decode("utf-8")
+                assert before in text
+                payload = text.replace(before, after, 1).encode("utf-8")
+            zout.writestr(info, payload)
+    return target
+
+
+def test_docx_formatting_change_is_dropped_not_nested(tmp_path: Path) -> None:
+    """``w:rPrChange`` holds the *previous* properties, so it must be dropped.
+
+    Unwrapping it nested ``w:rPr`` inside ``w:rPr``, which is invalid OpenXML
+    and makes Word offer to repair the document.
+    """
+    source = _docx_with_formatting_change(make_docx(tmp_path / "doc.docx"), tmp_path / "changed.docx")
+
+    cleaned, findings, _ = _clean(source.read_bytes())
+    document = _parts(cleaned)["word/document.xml"].decode("utf-8")
+    keys = {finding.key for finding in findings}
+
+    assert document.count("<w:rPr>") == 1
+    assert "<w:rPr><w:b /></w:rPr>" in document
+    assert "rPrChange" not in document
+    assert FAKE_AUTHOR not in document
+    assert "word:formatting-change" in keys
+    assert ("word:change_author", FAKE_AUTHOR) in {(finding.key, finding.value) for finding in findings}
+
+
+def test_docx_malformed_word_xml_raises_instead_of_leaking_revisions(tmp_path: Path) -> None:
+    """A broken ``word/document.xml`` must fail rather than leave ``w:del`` behind."""
+    path = tmp_path / "broken_doc.docx"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(
+            "word/document.xml",
+            f'<w:document xmlns:w="{NS_W[1:-1]}"><w:body>'
+            '<w:del w:author="Fake Author"><w:r><w:delText>deleted secret</w:delText></w:r></w:del>'
+            "<w:p><w:r><w:t>unclosed",
+        )
+    with pytest.raises(CorruptFileError, match="word/document.xml is not well formed"):
+        _clean(path.read_bytes())
+
+
+def test_office_zip_entry_count_limit(tmp_path: Path) -> None:
+    path = tmp_path / "many_entries.docx"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("word/document.xml", f'<w:document xmlns:w="{NS_W[1:-1]}"/>')
+        for index in range(5):
+            archive.writestr(f"word/extra_{index}.xml", "<x/>")
+
+    handler = OfficeHandler(max_entries=3)
+    with pytest.raises(CorruptFileError, match="too many entries"):
+        handler.clean_bytes(path.read_bytes(), CleanOptions())
+
+
+def test_office_zip_part_and_total_uncompressed_size_limits(tmp_path: Path) -> None:
+    path = make_docx(tmp_path / "doc.docx")
+    data = path.read_bytes()
+
+    small_part_handler = OfficeHandler(max_part_bytes=128)
+    with pytest.raises(CorruptFileError, match="exceeds maximum uncompressed size"):
+        small_part_handler.clean_bytes(data, CleanOptions())
+
+    small_total_handler = OfficeHandler(max_part_bytes=10_000, max_total_bytes=512)
+    with pytest.raises(CorruptFileError, match="exceeds maximum total uncompressed size"):
+        small_total_handler.clean_bytes(data, CleanOptions())
+
+
+def test_office_zip_streaming_limit_and_spoofed_header_size(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A spoofed header size or an oversized decompressed stream is rejected safely."""
+    path = make_docx(tmp_path / "doc.docx")
+    data = path.read_bytes()
+
+    # 1. If a ZIP header lies with file_size = 0 while carrying non-empty deflate
+    # data, Python's CRC check trips inside _read_archive and raises CorruptFileError.
+    original_infolist = zipfile.ZipFile.infolist
+
+    def spoofed_infolist(self: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
+        items = original_infolist(self)
+        for item in items:
+            item.file_size = 0
+        return items
+
+    monkeypatch.setattr(zipfile.ZipFile, "infolist", spoofed_infolist)
+    with pytest.raises(CorruptFileError, match="corrupt ZIP entry"):
+        OfficeHandler(max_part_bytes=128).clean_bytes(data, CleanOptions())
+
+    # 2. If the decompressed stream itself yields more bytes than max_part_bytes,
+    # the streaming loop aborts immediately.
+    monkeypatch.setattr(zipfile.ZipFile, "infolist", original_infolist)
+    monkeypatch.setattr(
+        zipfile.ZipFile,
+        "open",
+        lambda self, name, mode="r", pwd=None: io.BytesIO(b"x" * 1024),
+    )
+    with pytest.raises(CorruptFileError, match="exceeds maximum uncompressed size"):
+        OfficeHandler(max_part_bytes=900, max_total_bytes=5000).clean_bytes(data, CleanOptions())
