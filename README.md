@@ -114,17 +114,24 @@ Options accepted by both subcommands:
 | --- | --- |
 | `--json` | print the JSON audit report to stdout |
 | `--report FILE` | write the JSON audit report to `FILE` (`-` for stdout) |
-| `--strict` | exit with code 3 when sensitive metadata is found (CI gate) |
+| `--strict` | exit with code 3 when sensitive metadata is found (`scan`) or removed (`clean`) (CI gate) |
 | `--no-recursive` | do not descend into subdirectories |
 | `--strip-dates` | also remove creation / modification dates |
-| `--password TEXT` | password for an encrypted PDF |
+| `--password TEXT` | password for an encrypted PDF (`-` reads one line from stdin; prefer `--ask-password`) |
+| `--ask-password` | prompt for the PDF password so it never appears in shell history or the process list |
+| `--lang {en,tr}` | language for status and summary messages (default: `en`, or `DOC_META_STRIP_LANG`) |
 | `--keep-comments` | keep Office comments |
 | `--keep-embedded` | keep embedded files, attachments and JavaScript |
 | `--keep-thumbnails` | keep preview thumbnails |
 | `--quiet` / `-q` | print nothing but errors |
 
 Exit codes: `0` success, `1` a file could not be processed, `3` `--strict` found
-metadata, `2` bad command line.
+or removed metadata, `2` bad command line.
+
+The password can also come from `DOC_META_STRIP_PASSWORD`, and the interface
+language from `DOC_META_STRIP_LANG`. Neither value is written to the audit
+report or any log. `--lang tr` localizes human-readable status and summary
+lines; JSON report keys and values stay in English by design.
 
 ## JSON audit report
 
@@ -173,8 +180,12 @@ repos:
 ```
 
 The hook runs `doc-meta-strip clean --staged`, cleans the files in the git index
-and re-adds them, so a photo can never be committed with its GPS position. The
-same behaviour is available manually: `doc-meta-strip clean --staged`.
+and re-adds them, so a photo can never be committed with its GPS position. When
+the working-tree copy has unstaged edits that differ from the staged index blob,
+`--staged` sanitizes the staged index blob in place (`git hash-object` +
+`git update-index`) and leaves the working-tree file untouched so unstaged work
+is never overwritten or accidentally staged. The same behaviour is available
+manually: `doc-meta-strip clean --staged`.
 
 ## How it stays lossless
 
@@ -222,8 +233,12 @@ to install, which is what keeps Windows and `pre-commit` installs boring.
 
 * Only structural metadata is touched. Text or pixels are never OCR'd or
   redacted — a name typed into the middle of a paragraph stays there.
-* Encrypted PDFs must be unlocked with `--password`; the cleaned copy is written
-  **without** encryption. The password is never stored or logged.
+* Encrypted PDFs must be unlocked with `--password`, `--password -` (stdin) or
+  `--ask-password`; the cleaned copy is written **without** encryption. Prefer
+  `--ask-password` or the `DOC_META_STRIP_PASSWORD` environment variable: a
+  password typed as a command-line argument is visible in shell history and in
+  the process list while the command runs. The password is never stored,
+  logged, or written to the audit report.
 * Digital signatures are not preserved. Cleaning a signed PDF or Office document
   invalidates its signature, by design — the bytes change.
 * Office documents are validated with `python-docx`/`openpyxl` in the test suite,
@@ -231,6 +246,9 @@ to install, which is what keeps Windows and `pre-commit` installs boring.
   exotic documents (macros, embedded OLE, content controls) should be opened once
   before you publish them.
 * Very large PDFs are loaded into memory; there is no streaming mode yet.
+  Office ZIP archives enforce safety caps (`10,000` entries, `64 MiB` per
+  uncompressed part, `256 MiB` total uncompressed size) to guard against
+  decompression bombs.
 * This tool does not decide what is sensitive. It removes the metadata categories
   listed above, and `scan` shows you what it found so you can judge.
 

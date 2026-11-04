@@ -51,6 +51,85 @@ jobs:
       - name: Tests with coverage gate
         run: python -m pytest
       - name: Check the single quality gate script
-        if: runner.os == 'Linux' && matrix.python == '3.12'
+        if: matrix.python == '3.12'
         shell: bash
         run: bash scripts/check.sh
+
+  package:
+    name: wheel smoke test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Build wheel
+        run: python -m pip wheel --no-deps -w dist .
+      - name: Install wheel in clean venv and run CLI smoke test
+        shell: bash
+        run: |
+          python -m venv "${RUNNER_TEMP}/wheel-venv"
+          if [ -x "${RUNNER_TEMP}/wheel-venv/bin/python" ]; then
+            VENV_PY="${RUNNER_TEMP}/wheel-venv/bin/python"
+            VENV_CLI="${RUNNER_TEMP}/wheel-venv/bin/doc-meta-strip"
+          else
+            VENV_PY="${RUNNER_TEMP}/wheel-venv/Scripts/python.exe"
+            VENV_CLI="${RUNNER_TEMP}/wheel-venv/Scripts/doc-meta-strip.exe"
+          fi
+          "${VENV_PY}" -m pip install dist/*.whl
+          SMOKE_DIR="${RUNNER_TEMP}/smoke-work"
+          mkdir -p "${SMOKE_DIR}"
+          cd "${SMOKE_DIR}"
+          "${VENV_PY}" - <<'PY'
+          import zipfile
+          from pathlib import Path
+          import doc_meta_strip
+          from PIL import Image
+          from pypdf import PdfWriter
+
+          assert "site-packages" in doc_meta_strip.__file__, doc_meta_strip.__file__
+          out = Path(".")
+          exif = Image.Exif()
+          exif[0x013B] = "Fake Author"
+          exif[0x8825] = {1: "N", 2: (41.0, 0.0, 29.52), 3: "E", 4: (28.0, 58.0, 42.24)}
+          Image.new("RGB", (32, 32), (10, 20, 30)).save(out / "photo.jpg", "JPEG", exif=exif.tobytes())
+
+          writer = PdfWriter()
+          writer.add_blank_page(width=100, height=100)
+          writer.add_metadata({"/Author": "Fake Author", "/Producer": "Fake Producer"})
+          with (out / "rapor.pdf").open("wb") as handle:
+              writer.write(handle)
+
+          with zipfile.ZipFile(out / "sunum.docx", "w", zipfile.ZIP_DEFLATED) as zf:
+              zf.writestr("[Content_Types].xml", '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>')
+              zf.writestr(
+                  "word/document.xml",
+                  '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                  '<w:body><w:p><w:r><w:t>Public text</w:t></w:r>'
+                  '<w:del w:id="1" w:author="Fake Author"><w:r><w:delText>deleted secret</w:delText></w:r></w:del>'
+                  '</w:p></w:body></w:document>',
+              )
+              zf.writestr(
+                  "docProps/core.xml",
+                  '<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" '
+                  'xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:creator>Fake Author</dc:creator></cp:coreProperties>',
+              )
+          PY
+          "${VENV_CLI}" --version
+          "${VENV_CLI}" scan . --json > scan_before.json
+          "${VENV_CLI}" clean . --in-place --report audit.json
+          "${VENV_CLI}" scan . --strict
+          "${VENV_PY}" - <<'PY'
+          import json
+          from pathlib import Path
+          audit = json.loads(Path("audit.json").read_text(encoding="utf-8"))
+          assert audit["summary"]["files"] == 3, audit
+          assert audit["summary"]["cleaned"] == 3, audit
+          assert audit["summary"]["errors"] == 0, audit
+          PY
+

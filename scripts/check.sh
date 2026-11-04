@@ -12,20 +12,22 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+REQUIRED_MODULES="import pytest, pytest_cov, ruff, mypy, pypdf, PIL"
+
 PYTHON_BIN="${PYTHON:-}"
 if [ -z "${PYTHON_BIN}" ]; then
-  if [ -x ".venv/bin/python" ]; then
-    PYTHON_BIN=".venv/bin/python"
-  elif [ -x ".venv/Scripts/python.exe" ]; then
-    PYTHON_BIN=".venv/Scripts/python.exe"
-  elif [ -x "venv/bin/python" ]; then
-    PYTHON_BIN="venv/bin/python"
-  else
+  for candidate in ".venv/bin/python" ".venv/Scripts/python.exe" "venv/bin/python" "venv/Scripts/python.exe" "python3" "python"; do
+    if command -v "${candidate}" >/dev/null 2>&1 && "${candidate}" -c "${REQUIRED_MODULES}" >/dev/null 2>&1; then
+      PYTHON_BIN="${candidate}"
+      break
+    fi
+  done
+  if [ -z "${PYTHON_BIN}" ]; then
     PYTHON_BIN="python3"
   fi
 fi
 
-if ! "${PYTHON_BIN}" -c "import pytest, pytest_cov, ruff, mypy" >/dev/null 2>&1; then
+if ! "${PYTHON_BIN}" -c "${REQUIRED_MODULES}" >/dev/null 2>&1; then
   cat >&2 <<EOF
 error: development dependencies are missing for ${PYTHON_BIN}
 

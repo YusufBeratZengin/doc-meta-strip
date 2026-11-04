@@ -86,7 +86,9 @@ $ doc-meta-strip scan sunum.docx
 ```
 
 (Yukarıdaki çıktı depodaki test örneğinden alınmıştır: isim, şirket ve yol
-kasten uydurmadır. Arayüz İngilizcedir; rapor anahtarları da öyle.)
+kasten uydurmadır. Durum ve özet mesajları varsayılan olarak İngilizcedir;
+`--lang tr` veya `DOC_META_STRIP_LANG=tr` ile Türkçeleşir. JSON rapor
+anahtarları İngilizce kalır.)
 
 ## Neleri siler?
 
@@ -118,17 +120,24 @@ Her iki alt komutta geçerli seçenekler:
 | --- | --- |
 | `--json` | JSON denetim raporunu stdout'a yazar |
 | `--report DOSYA` | JSON denetim raporunu `DOSYA`ya yazar (`-` ile stdout) |
-| `--strict` | hassas üstveri bulunursa 3 koduyla çıkar (CI kapısı) |
+| `--strict` | hassas üstveri bulunduğunda (`scan`) veya silindiğinde (`clean`) 3 koduyla çıkar (CI kapısı) |
 | `--no-recursive` | alt klasörlere inmez |
 | `--strip-dates` | tarihleri de siler |
-| `--password METIN` | parola korumalı PDF parolası |
+| `--password METIN` | parola korumalı PDF parolası (`-` ile standart girdiden tek satır okunur; `--ask-password` tercih edilir) |
+| `--ask-password` | PDF parolasını sorar; parola kabuk geçmişine ve süreç listesine yazılmaz |
+| `--lang {en,tr}` | durum ve özet mesajlarının dili (varsayılan: `en` veya `DOC_META_STRIP_LANG`) |
 | `--keep-comments` | Office yorumlarını korur |
 | `--keep-embedded` | gömülü dosyaları, ekleri ve JavaScript'i korur |
 | `--keep-thumbnails` | küçük resimleri korur |
 | `--quiet` / `-q` | hata dışında hiçbir şey yazmaz |
 
 Çıkış kodları: `0` başarılı, `1` bir dosya işlenemedi, `3` `--strict` üstveri
-buldu, `2` hatalı komut satırı.
+buldu veya temizledi, `2` hatalı komut satırı.
+
+Parola `DOC_META_STRIP_PASSWORD`, arayüz dili `DOC_META_STRIP_LANG` ortam
+değişkenlerinden de okunabilir. Hiçbiri denetim raporuna veya bir günlüğe
+yazılmaz. `--lang tr` insan tarafından okunan durum ve özet satırlarını
+Türkçeleştirir; JSON rapor anahtarları tasarım gereği İngilizce kalır.
 
 ## JSON denetim raporu
 
@@ -177,7 +186,11 @@ repos:
 ```
 
 Kanca `doc-meta-strip clean --staged` çalıştırır: git indeksindeki dosyaları
-temizler ve yeniden `git add` yapar. Böylece GPS konumu taşıyan bir fotoğraf
+temizler ve yeniden `git add` yapar. Çalışma ağacındaki dosyada henüz indekse
+eklenmemiş (unstaged) değişiklikler varsa `--staged` yalnızca git indeksindeki
+blob'u temizleyip günceller (`git hash-object` + `git update-index`) ve çalışma
+kopyasına dokunmaz; böylece kaydedilmemiş değişiklikler ne ezilir ne de
+yanlışlıkla commit'e dahil edilir. Böylece GPS konumu taşıyan bir fotoğraf
 commit edilemez. Aynı davranışı elle de kullanabilirsiniz:
 `doc-meta-strip clean --staged`.
 
@@ -229,15 +242,21 @@ veya `libmagic` yok; Windows ve `pre-commit` kurulumlarını sıkıcı kılan da
 
 * Yalnızca yapısal üstveri temizlenir. Metin veya piksel OCR ile taranmaz,
   karartılmaz — paragrafın ortasına yazılmış bir isim orada kalır.
-* Parola korumalı PDF'ler `--password` ile açılmalıdır; temizlenen kopya
-  **şifresiz** yazılır. Parola hiçbir yerde saklanmaz veya kaydedilmez.
+* Parola korumalı PDF'ler `--password`, `--password -` (standart girdi) veya
+  `--ask-password` ile açılmalıdır; temizlenen kopya **şifresiz** yazılır.
+  `--ask-password` veya `DOC_META_STRIP_PASSWORD` ortam değişkeni tercih edin:
+  komut satırına yazılan parola kabuk geçmişinde ve komut çalışırken süreç
+  listesinde görünür. Parola hiçbir yerde saklanmaz, kaydedilmez ve denetim
+  raporuna yazılmaz.
 * Dijital imzalar korunmaz. İmzalı bir PDF veya Office belgesini temizlemek
   imzayı geçersiz kılar; bu tasarım gereğidir, çünkü baytlar değişir.
 * Office belgeleri test paketinde `python-docx`/`openpyxl` ile doğrulanır,
   Microsoft Word'ün kendisiyle değil. Dosyalar yapısal olarak geçerli OPC
   paketleridir; yine de makro, gömülü OLE veya içerik denetimleri içeren sıra dışı
   belgeleri yayımlamadan önce bir kez açıp kontrol edin.
-* Çok büyük PDF'ler belleğe alınır; akış (streaming) modu henüz yok.
+* Çok büyük PDF'ler belleğe alınır; akış (streaming) modu henüz yok. Office ZIP
+  arşivlerinde sıkıştırma bombalarına karşı üst sınırlar (`10.000` girdi,
+  parça başına `64 MiB`, toplam açılmış boyutta `256 MiB`) uygulanır.
 * Araç neyin hassas olduğuna karar vermez. Yukarıdaki üstveri kategorilerini
   siler; `scan` bulduklarını gösterir, kararı siz verirsiniz.
 

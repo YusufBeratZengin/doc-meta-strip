@@ -28,3 +28,10 @@ desktop.ini
 # Editors
 .idea/
 .vscode/
+
+# Environment and keys
+.env*
+*.pem
+*.key
+*.p12
+*.pfx
