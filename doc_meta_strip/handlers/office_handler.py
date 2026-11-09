@@ -20,11 +20,13 @@ from xml.etree import ElementTree as ET
 from ..base import (
     CleanOptions,
     CorruptFileError,
+    DocMetaStripError,
     Finding,
     Handler,
     UnsupportedFormatError,
     shorten,
 )
+from .image_handler import ImageHandler
 
 __all__ = [
     "MAX_ARCHIVE_ENTRIES",
@@ -374,6 +376,16 @@ class OfficeHandler(Handler):
                     )
                     dropped.add(name)
 
+        # Clean document pictures in place without removing their relationships.
+        for name in list(parts):
+            if not self._is_media_part(name):
+                continue
+            new_media, media_findings, media_warnings = self._sanitize_media(name, parts[name], opts)
+            findings.extend(media_findings)
+            warnings.extend(media_warnings)
+            if new_media != parts[name]:
+                parts[name] = new_media
+
         transform_targets = [
             name
             for name in parts
@@ -390,6 +402,8 @@ class OfficeHandler(Handler):
             )
             if part_findings:
                 findings.extend(part_findings)
+            # Apply cleanup independently of whether it produced a finding.
+            if new_payload != parts[name]:
                 parts[name] = new_payload
 
         dropped |= self._comment_drawing_parts(parts, dropped)
@@ -420,6 +434,50 @@ class OfficeHandler(Handler):
         if any(name.startswith("ppt/") for name in parts):
             return "pptx"
         return None
+
+    @staticmethod
+    def _is_media_part(name: str) -> bool:
+        """True for a picture stored in the OPC package's ``media/`` folder."""
+        return name.startswith(("word/media/", "xl/media/", "ppt/media/"))
+
+    @staticmethod
+    def _sanitize_media(
+        name: str, payload: bytes, options: CleanOptions
+    ) -> tuple[bytes, list[Finding], list[str]]:
+        """Strip metadata from an embedded JPEG/PNG/WebP in place.
+
+        The media part is referenced by the document body, so it cannot be
+        dropped like an attachment; the bytes are cleaned instead.  Formats
+        this package cannot parse are reported as a warning rather than
+        silently declared clean.
+        """
+        label = posixpath.basename(name)
+        handler = ImageHandler()
+        if not handler.sniff(payload):
+            finding = Finding(
+                key="office:media-uninspected",
+                value=f"{label}: unsupported image format",
+                category="embedded",
+            )
+            return payload, [finding], []
+        try:
+            cleaned, media_findings, _ = handler.clean_bytes(payload, options)
+        except DocMetaStripError as exc:
+            finding = Finding(
+                key="office:media-uninspected",
+                value=f"{label}: could not be inspected: {exc}",
+                category="embedded",
+            )
+            return payload, [finding], []
+        findings = [
+            Finding(
+                key=f"office:media:{finding.key}",
+                value=f"{label}: {finding.value}",
+                category=finding.category,
+            )
+            for finding in media_findings
+        ]
+        return cleaned, findings, []
 
     @staticmethod
     def _is_comment_part(name: str) -> bool:
@@ -549,10 +607,18 @@ class OfficeHandler(Handler):
         except ET.ParseError as exc:
             raise CorruptFileError(f"{name} is not well formed: {exc}") from exc
         findings: list[Finding] = []
-        stats = {"deleted": 0, "inserted": 0, "comments": 0, "rsids": 0, "changes": 0}
+        stats = {"deleted": 0, "inserted": 0, "comments": 0, "rsids": 0, "rsid_attrs": 0, "changes": 0}
         change_authors: list[str] = []
+        changed = False
+
+        def strip_attributes(element: ET.Element) -> None:
+            nonlocal changed
+            rsids, identity = self._strip_revision_attributes(element)
+            stats["rsid_attrs"] += rsids
+            changed = changed or bool(rsids or identity)
 
         def walk(parent: ET.Element) -> None:
+            nonlocal changed
             for child in list(parent):
                 tag = child.tag
                 name = localname(tag)
@@ -561,10 +627,12 @@ class OfficeHandler(Handler):
                     continue
                 if name in {"commentReference", "commentRangeStart", "commentRangeEnd"}:
                     if remove_comments:
+                        changed = True
                         stats["comments"] += 1
                         parent.remove(child)
                     continue
                 if name in W_DROP:
+                    changed = True
                     if name == "del":
                         stats["deleted"] += 1
                         findings.append(
@@ -592,18 +660,27 @@ class OfficeHandler(Handler):
                     parent.remove(child)
                     continue
                 if name in W_UNWRAP:
+                    changed = True
                     index = list(parent).index(child)
                     parent.remove(child)
                     walk(child)
-                    for offset, grandchild in enumerate(list(child)):
-                        parent.insert(index + offset, grandchild)
                     if name in {"ins", "moveTo"}:
                         stats["inserted"] += 1
+                        author = (child.attrib.get(qname(NS_W, "author")) or "").strip()
+                        findings.append(
+                            Finding(
+                                key="word:tracked-insertion",
+                                value=shorten(author) if author else "inserted revision",
+                                category="identity" if author else "revision",
+                            )
+                        )
+                    for offset, grandchild in enumerate(list(child)):
+                        parent.insert(index + offset, grandchild)
                     continue
-                self._strip_revision_attributes(child)
+                strip_attributes(child)
                 walk(child)
 
-        self._strip_revision_attributes(root)
+        strip_attributes(root)
         walk(root)
 
         if stats["comments"]:
@@ -614,11 +691,16 @@ class OfficeHandler(Handler):
                     category="comment",
                 )
             )
-        if stats["rsids"]:
+        if stats["rsids"] or stats["rsid_attrs"]:
+            details = []
+            if stats["rsids"]:
+                details.append(f"{stats['rsids']} revision-save id block(s)")
+            if stats["rsid_attrs"]:
+                details.append(f"{stats['rsid_attrs']} revision-save attribute(s)")
             findings.append(
                 Finding(
                     key="word:rsid",
-                    value=f"{stats['rsids']} revision-save id block(s)",
+                    value="; ".join(details),
                     category="revision",
                 )
             )
@@ -632,18 +714,30 @@ class OfficeHandler(Handler):
             )
         for author in dict.fromkeys(change_authors):
             findings.append(Finding(key="word:change_author", value=shorten(author), category="identity"))
-        if not findings:
+        if not changed:
             return payload, []
         return serialize(root), findings
 
     @staticmethod
-    def _strip_revision_attributes(element: ET.Element) -> None:
+    def _strip_revision_attributes(element: ET.Element) -> tuple[int, int]:
+        """Remove revision-save IDs and author/date attributes.
+
+        Returns ``(rsid_count, identity_count)`` so the caller can tell a
+        modified tree from a byte-identical one and report the rsid cleanup.
+        """
+        rsids = 0
+        identity = 0
         for attr in list(element.attrib):
             if namespace_of(attr) != NS_W:
                 continue
             name = localname(attr)
-            if name.startswith("rsid") or name in {"author", "date", "userId"}:
+            if name.startswith("rsid"):
                 del element.attrib[attr]
+                rsids += 1
+            elif name in {"author", "date", "userId"}:
+                del element.attrib[attr]
+                identity += 1
+        return rsids, identity
 
     # ------------------------------------------------------- relationships
 

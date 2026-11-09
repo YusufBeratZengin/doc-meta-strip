@@ -20,6 +20,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   image no longer survive cleaning.
 
 ### Fixed
+- Pictures embedded in Word, Excel and PowerPoint packages (`media/`) are
+  cleaned in place (JPEG/PNG/WebP metadata removed); unsupported or unreadable
+  images are reported as `office:media-uninspected` instead of being declared
+  clean.
+- Office XML cleanup is applied even when it produces no finding, so
+  revision-save (`rsid`) attributes and author/date attributes are always
+  removed; tracked insertions and `rsid` attributes are now reported.
+- An empty PDF password is accepted for encrypted PDFs instead of being treated
+  as "no password given".
+- `--report` no longer fails on file names that are not valid UTF-8; non-ASCII
+  characters are escaped in the JSON output.
 - JPEG progressive files are now parsed scan by scan instead of copying every
   byte after the first SOS verbatim: APPn/COM metadata segments that appear
   between scans are stripped, while entropy-coded bytes, stuffed `0xFF 0x00`

@@ -118,7 +118,9 @@ def write_report(report: dict[str, object], destination: str | Path) -> None:
     Any filesystem failure is translated into :class:`DocMetaStripError` so the
     CLI reports a controlled error instead of a traceback.
     """
-    payload = json.dumps(report, indent=2, ensure_ascii=False, sort_keys=False)
+    # Escaping non-ASCII keeps surrogate-escaped filesystem paths serializable
+    # even when a filename contains bytes that are not valid UTF-8.
+    payload = json.dumps(report, indent=2, ensure_ascii=True, sort_keys=False)
     if str(destination) == "-":
         sys.stdout.write(payload + "\n")
         return
@@ -127,5 +129,5 @@ def write_report(report: dict[str, object], destination: str | Path) -> None:
         if path.parent and not path.parent.exists():
             path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(payload + "\n", encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeError) as exc:
         raise DocMetaStripError(f"cannot write report {path}: {exc}") from exc

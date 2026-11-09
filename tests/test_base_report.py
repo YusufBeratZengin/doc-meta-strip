@@ -47,6 +47,21 @@ def test_unknown_category_falls_back() -> None:
     assert Finding(key="k", value="v", category="mystery").label == CATEGORY_LABELS["other"]
 
 
+def test_translated_label_and_summary_api() -> None:
+    from doc_meta_strip.base import CATEGORY_LABELS_TR, finding_label
+
+    assert (
+        finding_label(Finding(key="gps", value="GPS", category="gps"), lang="tr") == CATEGORY_LABELS_TR["gps"]
+    )
+    assert "dosya tarandı" in summarize(build_scan_report([]), lang="tr")
+
+
+def test_report_escapes_non_utf8_surrogate_paths(tmp_path: Path) -> None:
+    destination = tmp_path / "report.json"
+    write_report({"path": "photo_\udcff.jpg"}, destination)
+    assert json.loads(destination.read_text(encoding="utf-8"))["path"] == "photo_\udcff.jpg"
+
+
 def test_scan_result_properties() -> None:
     clean = ScanResult(path=Path("a"), file_format="pdf")
     assert clean.ok and not clean.dirty

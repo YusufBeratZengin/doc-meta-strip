@@ -603,3 +603,47 @@ def test_cli_subprocess_handles_legacy_windows_codepage(tmp_path: Path) -> None:
     )
     assert clean_proc.returncode == EXIT_OK
     assert FAKE_AUTHOR.encode() not in source.read_bytes()
+
+
+def test_unsupported_embedded_media_is_visible_in_human_scan(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import zipfile
+
+    source = tmp_path / "vector.docx"
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr("word/document.xml", '<w:document xmlns:w="urn:w"/>')
+        archive.writestr("word/media/unknown.svg", "<svg><metadata>Fake Embedded Author</metadata></svg>")
+    code = main(["scan", str(source), "--strict"])
+    output = capsys.readouterr().out
+    assert code == EXIT_METADATA
+    assert "media-uninspected" in output
+    assert "unknown.svg" in output
+
+
+def test_staged_cleans_index_blob_not_worktree(git_repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """The commit must contain the cleaned *staged* version, not the worktree.
+
+    Reproduces the leak where ``clean --staged`` read the file from disk,
+    cleaned that, and ``git add``-ed it -- sweeping every unstaged edit (here a
+    secret appended after staging) into the next commit.
+    """
+    source = make_jpeg(git_repo / "belge.jpg")
+    staged_v1 = source.read_bytes()
+    subprocess.run(["git", "-C", str(git_repo), "add", "belge.jpg"], check=True)
+
+    # v2 exists only in the worktree and carries content that must not be staged.
+    worktree_v2 = staged_v1 + b"WORKTREE-ONLY-SECRET"
+    source.write_bytes(worktree_v2)
+
+    assert main(["clean", "--staged"]) == EXIT_OK
+
+    index_blob = subprocess.run(
+        ["git", "-C", str(git_repo), "show", ":belge.jpg"], capture_output=True, check=True
+    ).stdout
+    assert b"WORKTREE-ONLY-SECRET" not in index_blob
+    assert FAKE_AUTHOR.encode() not in index_blob
+    assert index_blob != staged_v1
+    # The unrelated worktree change is preserved untouched.
+    assert source.read_bytes() == worktree_v2
+    assert "unstaged changes; cleaned staged index blob only" in capsys.readouterr().out

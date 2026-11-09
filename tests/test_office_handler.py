@@ -356,3 +356,84 @@ def test_office_zip_streaming_limit_and_spoofed_header_size(
     )
     with pytest.raises(CorruptFileError, match="exceeds maximum uncompressed size"):
         OfficeHandler(max_part_bytes=900, max_total_bytes=5000).clean_bytes(data, CleanOptions())
+
+
+def _docx_with_body(path: Path, body: str, extra_parts: dict[str, bytes] | None = None) -> Path:
+    """Write a minimal DOCX whose ``word/document.xml`` contains ``body``."""
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "[Content_Types].xml",
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>',
+        )
+        archive.writestr(
+            "word/document.xml",
+            f'<w:document xmlns:w="{NS_W[1:-1]}"><w:body>{body}</w:body></w:document>',
+        )
+        for name, payload in (extra_parts or {}).items():
+            archive.writestr(name, payload)
+    return path
+
+
+def test_docx_rsid_only_part_is_cleaned_without_other_findings(tmp_path: Path) -> None:
+    """A part whose only cleanup is ``w:rsid*`` attributes must still be written.
+
+    The cleaned tree used to be thrown away whenever the part produced no
+    ``Finding``, so the save IDs survived in a document that scanned clean.
+    """
+    source = _docx_with_body(
+        tmp_path / "rsid.docx",
+        '<w:p w:rsidR="00AB12CD" w:rsidRDefault="00AB12CD" w:rsidP="00FF00AA">'
+        "<w:r><w:t>Public paragraph</w:t></w:r></w:p>",
+    )
+
+    cleaned, findings, _ = _clean(source.read_bytes())
+    document = _parts(cleaned)["word/document.xml"]
+
+    assert b"rsid" not in document
+    assert b"Public paragraph" in document
+    assert any(finding.key == "word:rsid" for finding in findings)
+
+
+def test_docx_insertion_only_part_is_unwrapped(tmp_path: Path) -> None:
+    """``w:ins`` is unwrapped even when no other finding exists in the part."""
+    source = _docx_with_body(
+        tmp_path / "ins.docx",
+        '<w:p><w:ins w:id="1" w:author="Fake Author" w:date="2026-01-01T00:00:00Z">'
+        "<w:r><w:t>inserted text</w:t></w:r></w:ins></w:p>",
+    )
+
+    cleaned, findings, _ = _clean(source.read_bytes())
+    document = _parts(cleaned)["word/document.xml"]
+
+    assert b"w:ins" not in document
+    assert FAKE_AUTHOR.encode() not in document
+    assert b"inserted text" in document
+    assert any(finding.key == "word:tracked-insertion" for finding in findings)
+
+
+def test_docx_embedded_media_exif_is_removed(tmp_path: Path) -> None:
+    """GPS/EXIF inside ``word/media`` must be cleaned, not reported as clean."""
+    from conftest import make_jpeg
+
+    jpeg = make_jpeg(tmp_path / "photo.jpg").read_bytes()
+    assert b"Exif\x00\x00" in jpeg
+    source = _docx_with_body(
+        tmp_path / "media.docx",
+        "<w:p/>",
+        extra_parts={"word/media/image1.jpeg": jpeg},
+    )
+
+    cleaned, findings, warnings = _clean(source.read_bytes())
+    media = _parts(cleaned)["word/media/image1.jpeg"]
+
+    assert b"Exif\x00\x00" not in media
+    assert FAKE_AUTHOR.encode() not in media
+    assert b"GPS" not in media
+    assert any(finding.category == "gps" for finding in findings), warnings
+    assert any(finding.key == "office:media:exif:GPS" for finding in findings)
+
+    from PIL import Image
+
+    with Image.open(io.BytesIO(media)) as image:
+        assert image.size == (48, 32)
+    assert OfficeHandler().scan(source).findings
