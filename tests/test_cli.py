@@ -610,15 +610,15 @@ def test_unsupported_embedded_media_is_visible_in_human_scan(
 ) -> None:
     import zipfile
 
-    source = tmp_path / "vector.docx"
+    source = tmp_path / "scan.docx"
     with zipfile.ZipFile(source, "w") as archive:
         archive.writestr("word/document.xml", '<w:document xmlns:w="urn:w"/>')
-        archive.writestr("word/media/unknown.svg", "<svg><metadata>Fake Embedded Author</metadata></svg>")
+        archive.writestr("word/media/unknown.tif", b"II*\x00" + bytes(32))
     code = main(["scan", str(source), "--strict"])
     output = capsys.readouterr().out
     assert code == EXIT_METADATA
     assert "media-uninspected" in output
-    assert "unknown.svg" in output
+    assert "unknown.tif" in output
 
 
 def test_staged_cleans_index_blob_not_worktree(git_repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -647,3 +647,25 @@ def test_staged_cleans_index_blob_not_worktree(git_repo: Path, capsys: pytest.Ca
     # The unrelated worktree change is preserved untouched.
     assert source.read_bytes() == worktree_v2
     assert "unstaged changes; cleaned staged index blob only" in capsys.readouterr().out
+
+
+def test_strict_scan_is_green_after_cleaning_a_docx_with_vector_pictures(tmp_path: Path) -> None:
+    """GIF/SVG pictures are cleaned, so ``clean`` then ``scan --strict`` exits 0."""
+    import zipfile
+
+    svg = (
+        b'<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1">'
+        b'<metadata>Fake Embedded Author</metadata><rect width="1" height="1"/></svg>'
+    )
+    gif = (
+        b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff"
+        b"\x21\xfe\x04Fake\x00\x2c\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02\x44\x01\x00\x3b"
+    )
+    source = tmp_path / "vector.docx"
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr("word/document.xml", '<w:document xmlns:w="urn:w"/>')
+        archive.writestr("word/media/a.svg", svg)
+        archive.writestr("word/media/b.gif", gif)
+    assert main(["scan", str(source), "--strict"]) == EXIT_METADATA
+    assert main(["clean", str(source), "--in-place"]) == EXIT_OK
+    assert main(["scan", str(source), "--strict"]) == EXIT_OK

@@ -437,3 +437,121 @@ def test_docx_embedded_media_exif_is_removed(tmp_path: Path) -> None:
     with Image.open(io.BytesIO(media)) as image:
         assert image.size == (48, 32)
     assert OfficeHandler().scan(source).findings
+
+
+# --------------------------------------------------- pictures outside media/ and vector formats
+
+_GIF_WITH_COMMENT = (
+    b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff"  # header + 2-colour table
+    b"\x21\xff\x0bNETSCAPE2.0\x03\x01\x00\x00\x00"  # loop count: kept
+    b"\x21\xfe\x0cGIFSECRETAUT\x00"  # comment: removed
+    b"\x21\xff\x0bXMP DataXMP\x04ABCD\x00"  # XMP application extension: removed
+    b"\x2c\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02\x44\x01\x00"  # one pixel
+    b"\x3b"
+)
+_SVG_WITH_METADATA = (
+    b'<?xml version="1.0"?><!-- made by SVGSECRETAUTHOR -->'
+    b'<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" '
+    b'inkscape:version="1.0" width="4" height="4"><title>SVGSECRETTITLE</title>'
+    b"<metadata>SVGSECRETMETA</metadata>"
+    b'<rect width="4" height="4" fill="red"/></svg>'
+)
+
+
+def _emf_with_description() -> bytes:
+    import struct
+
+    description = "EMFSECRETAPP\x00".encode("utf-16-le")
+    header = bytearray(0x58)
+    struct.pack_into("<II", header, 0, 1, 0x58 + len(description))
+    header[40:44] = b" EMF"
+    struct.pack_into("<II", header, 0x2C, len(description) // 2, 0x58)
+    return bytes(header) + description
+
+
+def _assert_stable(source: Path) -> bytes:
+    """Clean once; cleaning the result again must find nothing in the pictures."""
+    cleaned, findings, _ = _clean(source.read_bytes())
+    assert findings
+    _, again_findings, _ = _clean(cleaned)
+    assert not [f for f in again_findings if f.key.startswith("office:media")], again_findings
+    return cleaned
+
+
+def test_docx_gif_is_cleaned_and_rescans_clean(tmp_path: Path) -> None:
+    source = _docx_with_body(tmp_path / "gif.docx", "<w:p/>", {"word/media/icon.gif": _GIF_WITH_COMMENT})
+    cleaned = _parts(_assert_stable(source))["word/media/icon.gif"]
+    assert b"GIFSECRET" not in cleaned
+    assert b"XMP Data" not in cleaned
+    assert b"NETSCAPE2.0" in cleaned
+    assert cleaned.startswith(b"GIF89a") and cleaned.endswith(b"\x3b")
+    from PIL import Image
+
+    with Image.open(io.BytesIO(cleaned)) as image:
+        assert image.size == (1, 1)
+    rebuilt = _docx_with_body(tmp_path / "gif2.docx", "<w:p/>", {"word/media/icon.gif": cleaned})
+    assert not OfficeHandler().scan(rebuilt).findings
+
+
+def test_docx_svg_is_cleaned_and_rescans_clean(tmp_path: Path) -> None:
+    source = _docx_with_body(tmp_path / "svg.docx", "<w:p/>", {"word/media/chart.svg": _SVG_WITH_METADATA})
+    cleaned = _parts(_assert_stable(source))["word/media/chart.svg"]
+    for secret in (b"SVGSECRET", b"inkscape"):
+        assert secret not in cleaned
+    assert b"<rect" in cleaned
+    rebuilt = _docx_with_body(tmp_path / "svg2.docx", "<w:p/>", {"word/media/chart.svg": cleaned})
+    assert not OfficeHandler().scan(rebuilt).findings
+
+
+def test_docx_emf_description_is_blanked_and_rescans_clean(tmp_path: Path) -> None:
+    emf = _emf_with_description()
+    source = _docx_with_body(tmp_path / "emf.docx", "<w:p/>", {"word/media/image1.emf": emf})
+    cleaned = _parts(_assert_stable(source))["word/media/image1.emf"]
+    assert b"E\x00M\x00F\x00S\x00" not in cleaned
+    assert len(cleaned) == len(emf)
+    rebuilt = _docx_with_body(tmp_path / "emf2.docx", "<w:p/>", {"word/media/image1.emf": cleaned})
+    assert not OfficeHandler().scan(rebuilt).findings
+
+
+def test_docx_metadata_free_vector_pictures_scan_clean(tmp_path: Path) -> None:
+    """Pictures without metadata must not trip ``scan --strict``."""
+    plain_gif = _GIF_WITH_COMMENT.replace(b"\x21\xfe\x0cGIFSECRETAUT\x00", b"").replace(
+        b"\x21\xff\x0bXMP DataXMP\x04ABCD\x00", b""
+    )
+    plain_svg = (
+        b'<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><rect width="1" height="1"/></svg>'
+    )
+    wmf = b"\xd7\xcd\xc6\x9a" + bytes(18)
+    source = _docx_with_body(
+        tmp_path / "plain.docx",
+        "<w:p/>",
+        {"word/media/a.gif": plain_gif, "word/media/b.svg": plain_svg, "word/media/c.wmf": wmf},
+    )
+    assert not OfficeHandler().scan(source).findings
+
+
+def test_docx_unparseable_picture_is_never_reported_clean(tmp_path: Path) -> None:
+    tiff = b"II*\x00" + bytes(32)
+    source = _docx_with_body(tmp_path / "tiff.docx", "<w:p/>", {"word/media/scan.tif": tiff})
+    assert [f.key for f in OfficeHandler().scan(source).findings] == ["office:media-uninspected"]
+    broken = _docx_with_body(tmp_path / "broken.docx", "<w:p/>", {"word/media/x.gif": b"GIF89a\x01"})
+    assert [f.key for f in OfficeHandler().scan(broken).findings] == ["office:media-uninspected"]
+
+
+@pytest.mark.parametrize(
+    "location", ["word/pics/image1.jpeg", "word/Media/image1.jpeg", "word/embedded/photo.dat"]
+)
+def test_docx_picture_outside_media_folder_is_still_cleaned(tmp_path: Path, location: str) -> None:
+    """OPC relationships may point anywhere; the folder name is not a trust boundary."""
+    from conftest import make_jpeg
+
+    jpeg = make_jpeg(tmp_path / "photo.jpg").read_bytes()
+    source = _docx_with_body(tmp_path / "pics.docx", "<w:p/>", {location: jpeg})
+    assert OfficeHandler().scan(source).findings
+    cleaned, findings, _ = _clean(source.read_bytes())
+    media = _parts(cleaned)[location]
+    assert b"Exif\x00\x00" not in media
+    assert b"GPS" not in media
+    assert any(finding.category == "gps" for finding in findings)
+    rebuilt = _docx_with_body(tmp_path / "pics2.docx", "<w:p/>", {location: media})
+    assert not OfficeHandler().scan(rebuilt).findings

@@ -26,6 +26,7 @@ from ..base import (
     UnsupportedFormatError,
     shorten,
 )
+from ._vector_media import clean_emf, clean_gif, clean_svg, sniff_kind
 from .image_handler import ImageHandler
 
 __all__ = [
@@ -378,7 +379,7 @@ class OfficeHandler(Handler):
 
         # Clean document pictures in place without removing their relationships.
         for name in list(parts):
-            if not self._is_media_part(name):
+            if name in dropped or not self._is_media_part(name, parts[name]):
                 continue
             new_media, media_findings, media_warnings = self._sanitize_media(name, parts[name], opts)
             findings.extend(media_findings)
@@ -435,49 +436,69 @@ class OfficeHandler(Handler):
             return "pptx"
         return None
 
-    @staticmethod
-    def _is_media_part(name: str) -> bool:
-        """True for a picture stored in the OPC package's ``media/`` folder."""
-        return name.startswith(("word/media/", "xl/media/", "ppt/media/"))
+    _PACKAGE_IMAGE_SUFFIXES = (
+        ".jpg", ".jpeg", ".jpe", ".jfif", ".png", ".webp", ".gif", ".svg", ".emf", ".wmf",
+        ".tif", ".tiff", ".bmp", ".dib", ".wdp", ".jxr", ".heic", ".avif",
+    )  # fmt: skip
+
+    @classmethod
+    def _is_media_part(cls, name: str, payload: bytes = b"") -> bool:
+        """True for a picture part, wherever the package stores it.
+
+        OPC lets a relationship point at any path, so the location is not
+        trusted: a part counts when it lives in a ``media`` folder, has an
+        image extension, or its bytes look like a known image format.  XML
+        parts are never pictures (SVG is recognised by extension or root tag).
+        """
+        lowered = name.lower()
+        if lowered.endswith((".rels", ".xml")):
+            return False
+        if "/media/" in f"/{lowered}" or lowered.endswith(cls._PACKAGE_IMAGE_SUFFIXES):
+            return True
+        return ImageHandler().sniff(payload) or sniff_kind(name, payload) is not None
 
     @staticmethod
     def _sanitize_media(
         name: str, payload: bytes, options: CleanOptions
     ) -> tuple[bytes, list[Finding], list[str]]:
-        """Strip metadata from an embedded JPEG/PNG/WebP in place.
+        """Strip metadata from an embedded picture in place.
 
         The media part is referenced by the document body, so it cannot be
-        dropped like an attachment; the bytes are cleaned instead.  Formats
-        this package cannot parse are reported as a warning rather than
-        silently declared clean.
+        dropped like an attachment; the bytes are cleaned instead.  JPEG, PNG,
+        WebP, GIF, SVG and EMF are cleaned; WMF carries no free-form metadata.
+        Anything else (TIFF, BMP, ...) cannot be inspected and is reported as
+        ``office:media-uninspected``, never declared clean.
         """
         label = posixpath.basename(name)
         handler = ImageHandler()
-        if not handler.sniff(payload):
-            finding = Finding(
-                key="office:media-uninspected",
-                value=f"{label}: unsupported image format",
-                category="embedded",
-            )
-            return payload, [finding], []
         try:
-            cleaned, media_findings, _ = handler.clean_bytes(payload, options)
+            if handler.sniff(payload):
+                cleaned, media_findings, _ = handler.clean_bytes(payload, options)
+                findings = [
+                    Finding(
+                        key=f"office:media:{finding.key}",
+                        value=f"{label}: {finding.value}",
+                        category=finding.category,
+                    )
+                    for finding in media_findings
+                ]
+                return cleaned, findings, []
+            kind = sniff_kind(name, payload)
+            if kind == "wmf":
+                return payload, [], []
+            cleaners = {"gif": clean_gif, "svg": clean_svg, "emf": clean_emf}
+            if kind in cleaners:
+                cleaned, vector_findings = cleaners[kind](payload, label)
+                findings = [
+                    Finding(key=f"office:media:{f.key}", value=f.value, category=f.category)
+                    for f in vector_findings
+                ]
+                return cleaned, findings, []
+            reason = "unsupported image format"
         except DocMetaStripError as exc:
-            finding = Finding(
-                key="office:media-uninspected",
-                value=f"{label}: could not be inspected: {exc}",
-                category="embedded",
-            )
-            return payload, [finding], []
-        findings = [
-            Finding(
-                key=f"office:media:{finding.key}",
-                value=f"{label}: {finding.value}",
-                category=finding.category,
-            )
-            for finding in media_findings
-        ]
-        return cleaned, findings, []
+            reason = f"could not be inspected: {exc}"
+        finding = Finding(key="office:media-uninspected", value=f"{label}: {reason}", category="embedded")
+        return payload, [finding], []
 
     @staticmethod
     def _is_comment_part(name: str) -> bool:

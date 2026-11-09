@@ -20,10 +20,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   image no longer survive cleaning.
 
 ### Fixed
-- Pictures embedded in Word, Excel and PowerPoint packages (`media/`) are
-  cleaned in place (JPEG/PNG/WebP metadata removed); unsupported or unreadable
-  images are reported as `office:media-uninspected` instead of being declared
-  clean.
+- Pictures embedded in Word, Excel and PowerPoint packages are cleaned in
+  place wherever the package stores them: a part counts as a picture by its
+  `media` folder, its extension or its bytes, not only by a `word/media/` path.
+  JPEG/PNG/WebP metadata is removed, GIF comment and application extensions
+  (XMP and similar), SVG `title`/`desc`/`metadata`/comments and editor
+  namespaces, and the EMF header description are removed as well. WMF carries
+  no free-form metadata. A picture that cannot be cleaned (for example TIFF or
+  a corrupt file) is reported as `office:media-uninspected` and is never
+  declared clean. A cleaned package no longer keeps `scan --strict` red.
 - Office XML cleanup is applied even when it produces no finding, so
   revision-save (`rsid`) attributes and author/date attributes are always
   removed; tracked insertions and `rsid` attributes are now reported.
