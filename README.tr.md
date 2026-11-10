@@ -102,7 +102,7 @@ anahtarları İngilizce kalır.)
 | **PPTX** | `docProps` parçaları, küçük resimler, yorum parçaları | slaytlar, notlar, medyanın piksel verisi (gömülü görselin üst verisi silinir) |
 | **PDF** | Info sözlüğü (`Author`, `Producer`, `Creator`, `Title`…), XMP paketi, `/EmbeddedFiles`, `/JavaScript` ad ağacı, sayfa küçük resimleri, dosya eki/film/ses açıklamaları, `/PieceInfo` | metin katmanı, yazı tipleri, görseller, form alanları, yer imleri, sayfa yapısı |
 
-DOCX/XLSX/PPTX içindeki görseller paketin neresinde olursa olsun temizlenir: JPEG, PNG, WebP; ayrıca GIF (yorum ve XMP/uygulama uzantıları), SVG (`title`, `desc`, `metadata`, yorumlar, editör ad alanları) ve EMF (başlık açıklaması). WMF serbest üst veri taşımaz. Başka biçimdeki görsel (ör. TIFF) incelenemez ve `office:media-uninspected` olarak raporlanır; `scan --strict` dosyaya "temiz" demek yerine sıfırdan farklı döner.
+DOCX/XLSX/PPTX içindeki görseller paketin neresinde olursa olsun temizlenir: JPEG, PNG, WebP; ayrıca GIF (yorum ve XMP/uygulama uzantıları), SVG (`title`, `desc`, `metadata`, yorumlar, editör ad alanları) ve EMF (başlık açıklaması). WMF serbest üst veri taşımaz. EMF içindeki EMF+ ve `EMR_COMMENT` kayıtları temizlenmez. Diğer medya (TIFF, BMP, video, ses) incelenemez ve `office:media-uninspected` olarak raporlanır; bu dosyalarda (ör. gömülü videolu PPTX) `scan --strict` "temiz" demek yerine sıfırdan farklı döner.
 
 Oluşturma ve değiştirme tarihleri varsayılan olarak korunur; belge denetimi için
 genelde gerekirler. Tamamen silmek için `--strip-dates` kullanın.

@@ -20,10 +20,15 @@ __all__ = ["clean_emf", "clean_gif", "clean_svg", "sniff_kind"]
 SVG_NS = "http://www.w3.org/2000/svg"
 XLINK_NS = "http://www.w3.org/1999/xlink"
 XML_NS = "http://www.w3.org/XML/1998/namespace"
-_KEPT_NAMESPACES = {SVG_NS, XLINK_NS, XML_NS, ""}
+XHTML_NS = "http://www.w3.org/1999/xhtml"
+MATHML_NS = "http://www.w3.org/1998/Math/MathML"
+# Visible content may live in foreignObject; editor/metadata namespaces are dropped.
+_KEPT_NAMESPACES = {SVG_NS, XLINK_NS, XML_NS, XHTML_NS, MATHML_NS, ""}
 _METADATA_TAGS = {"metadata", "title", "desc"}
 _KEPT_GIF_APPS = {b"NETSCAPE2.0", b"ANIMEXTS1.0"}  # loop count, needed for playback
 _EMF_SIGNATURE = b" EMF"
+_EMF_N_DESCRIPTION = 0x3C
+_EMF_MIN_HEADER = 0x58  # smallest ENHMETAHEADER (no pixel format / OpenGL extension)
 _WMF_MAGIC = (b"\xd7\xcd\xc6\x9a", b"\x01\x00\x09\x00", b"\x02\x00\x09\x00")
 
 
@@ -119,7 +124,8 @@ def _prune_svg(element: ET.Element, removed: list[str]) -> None:
     for child in list(element):
         tag = child.tag if isinstance(child.tag, str) else ""
         local = tag.rsplit("}", 1)[-1]
-        if _ns(tag) not in _KEPT_NAMESPACES or (_ns(tag) == SVG_NS and local in _METADATA_TAGS):
+        in_svg = _ns(tag) in (SVG_NS, "")
+        if _ns(tag) not in _KEPT_NAMESPACES or (in_svg and local in _METADATA_TAGS):
             element.remove(child)
             removed.append(f"element {local}")
         else:
@@ -153,18 +159,23 @@ def clean_svg(data: bytes, label: str) -> tuple[bytes, list[Finding]]:
 
 
 def clean_emf(data: bytes, label: str) -> tuple[bytes, list[Finding]]:
-    """Blank the header description (application / document title) in place."""
-    if len(data) < 0x34:
+    """Blank the header description (application / document title) in place.
+
+    ``ENHMETAHEADER`` ([MS-EMF] 2.2.9): ``nDescription`` is at 0x3C and
+    ``offDescription`` at 0x40; the bytes at 0x2C/0x30 are ``nVersion`` and
+    ``nBytes`` and must never be touched.
+    """
+    if len(data) < _EMF_MIN_HEADER:
         raise CorruptFileError("truncated EMF header")
-    chars, offset = struct.unpack_from("<II", data, 0x2C)
+    chars, offset = struct.unpack_from("<II", data, _EMF_N_DESCRIPTION)
     if chars == 0:
         return data, []
     end = offset + 2 * chars
-    if offset < 0x34 or end > len(data):
+    if offset < _EMF_MIN_HEADER or end > len(data):
         raise CorruptFileError("EMF description is out of bounds")
     out = bytearray(data)
     out[offset:end] = bytes(end - offset)
-    struct.pack_into("<II", out, 0x2C, 0, 0)
+    struct.pack_into("<II", out, _EMF_N_DESCRIPTION, 0, 0)
     return bytes(out), [
         Finding(key="emf:description", value=f"{label}: header description", category="description")
     ]

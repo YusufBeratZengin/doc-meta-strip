@@ -458,15 +458,33 @@ _SVG_WITH_METADATA = (
 )
 
 
+# A real 216-byte EMF produced by Windows GDI (CreateEnhMetaFileW with the description
+# "FakeDrawApp" / "Fake Secret Title", one Rectangle, CloseEnhMetaFile), not hand-built.
+_REAL_GDI_EMF = bytes.fromhex(
+    "01000000ac000000000000000000000009000000090000000000000000000000"
+    "d2000000d200000020454d4600000100d800000003000000010000001f000000"
+    "6c00000000000000000a0000a005000055020000500100000000000000000000"
+    "00000000081c090080200500460061006b006500440072006100770041007000"
+    "70000000460061006b0065002000530065006300720065007400200054006900"
+    "74006c0065000000000000002b00000018000000000000000000000009000000"
+    "090000000e00000014000000000000001000000014000000"
+)
+
+
 def _emf_with_description() -> bytes:
+    """Return the GDI-made EMF after checking its header against [MS-EMF] 2.2.9."""
     import struct
 
-    description = "EMFSECRETAPP\x00".encode("utf-16-le")
-    header = bytearray(0x58)
-    struct.pack_into("<II", header, 0, 1, 0x58 + len(description))
-    header[40:44] = b" EMF"
-    struct.pack_into("<II", header, 0x2C, len(description) // 2, 0x58)
-    return bytes(header) + description
+    emf = _REAL_GDI_EMF
+    assert struct.unpack_from("<II", emf, 0) == (1, 172)  # EMR_HEADER, record size
+    assert emf[40:44] == b" EMF"
+    version, n_bytes, n_records = struct.unpack_from("<III", emf, 44)
+    assert (version, n_bytes) == (0x10000, len(emf))
+    n_description, off_description = struct.unpack_from("<II", emf, 0x3C)
+    assert (n_description, off_description) == (31, 108)
+    text = emf[off_description : off_description + 2 * n_description].decode("utf-16-le")
+    assert text == "FakeDrawApp\x00Fake Secret Title\x00\x00"
+    return emf
 
 
 def _assert_stable(source: Path) -> bytes:
@@ -555,3 +573,21 @@ def test_docx_picture_outside_media_folder_is_still_cleaned(tmp_path: Path, loca
     assert any(finding.category == "gps" for finding in findings)
     rebuilt = _docx_with_body(tmp_path / "pics2.docx", "<w:p/>", {location: media})
     assert not OfficeHandler().scan(rebuilt).findings
+
+
+def test_svg_keeps_visible_foreign_object_text_and_cleans_unnamespaced_metadata(tmp_path: Path) -> None:
+    svg = (
+        b'<svg xmlns="http://www.w3.org/2000/svg"><foreignObject width="5" height="5">'
+        b'<div xmlns="http://www.w3.org/1999/xhtml">VISIBLE TEXT</div></foreignObject></svg>'
+    )
+    source = _docx_with_body(tmp_path / "fo.docx", "<w:p/>", {"word/media/fo.svg": svg})
+    cleaned, findings, _ = _clean(source.read_bytes())
+    assert b"VISIBLE TEXT" in _parts(cleaned)["word/media/fo.svg"]
+    assert not [f for f in findings if f.key.startswith("office:media")]
+
+    bare = b"<svg><title>BARESECRET</title><desc>BARESECRET</desc><rect/></svg>"
+    source = _docx_with_body(tmp_path / "bare.docx", "<w:p/>", {"word/media/bare.svg": bare})
+    assert OfficeHandler().scan(source).findings
+    cleaned, _, _ = _clean(source.read_bytes())
+    out = _parts(cleaned)["word/media/bare.svg"]
+    assert b"BARESECRET" not in out and b"<rect" in out

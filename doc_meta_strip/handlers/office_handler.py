@@ -466,7 +466,7 @@ class OfficeHandler(Handler):
         The media part is referenced by the document body, so it cannot be
         dropped like an attachment; the bytes are cleaned instead.  JPEG, PNG,
         WebP, GIF, SVG and EMF are cleaned; WMF carries no free-form metadata.
-        Anything else (TIFF, BMP, ...) cannot be inspected and is reported as
+        Anything else (TIFF, BMP, video, audio, ...) cannot be inspected and is reported as
         ``office:media-uninspected``, never declared clean.
         """
         label = posixpath.basename(name)
@@ -494,7 +494,7 @@ class OfficeHandler(Handler):
                     for f in vector_findings
                 ]
                 return cleaned, findings, []
-            reason = "unsupported image format"
+            reason = "unsupported media format"
         except DocMetaStripError as exc:
             reason = f"could not be inspected: {exc}"
         finding = Finding(key="office:media-uninspected", value=f"{label}: {reason}", category="embedded")

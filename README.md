@@ -96,7 +96,7 @@ path are deliberately fake.)
 | **PPTX** | `docProps` parts, thumbnails, comment parts | slides, notes, pixel data of media (embedded picture metadata is removed) |
 | **PDF** | Info dictionary (`Author`, `Producer`, `Creator`, `Title`, …), XMP packet, `/EmbeddedFiles`, `/JavaScript` name tree, page thumbnails, file-attachment/movie/sound annotations, `/PieceInfo` | text layer, fonts, images, form fields, bookmarks, page structure |
 
-Pictures inside DOCX/XLSX/PPTX are cleaned wherever the package stores them: JPEG, PNG and WebP as above, plus GIF (comment and XMP/application extensions), SVG (`title`, `desc`, `metadata`, comments, editor namespaces) and EMF (header description); WMF has no free-form metadata. A picture in any other format (for example TIFF) cannot be inspected and is reported as `office:media-uninspected`, so `scan --strict` stays non-zero instead of calling the file clean.
+Pictures inside DOCX/XLSX/PPTX are cleaned wherever the package stores them: JPEG, PNG and WebP as above, plus GIF (comment and XMP/application extensions), SVG (`title`, `desc`, `metadata`, comments, editor namespaces) and EMF (header description); WMF has no free-form metadata. EMF+ and `EMR_COMMENT` records inside an EMF are not cleaned. Any other media (TIFF, BMP, video, audio) cannot be inspected and is reported as `office:media-uninspected`, so `scan --strict` stays non-zero for those files (for example a PPTX with an embedded video) instead of calling them clean.
 
 Creation and modification dates are preserved by default — they are usually
 needed for document control. Pass `--strip-dates` to remove those too.
