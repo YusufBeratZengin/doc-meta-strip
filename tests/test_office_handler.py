@@ -653,3 +653,16 @@ def test_svg_head_style_is_kept_while_title_and_meta_go(tmp_path: Path) -> None:
     out = _parts(cleaned)["word/media/h.svg"]
     assert b"p{color:red}" in out and b"VISIBLE" in out
     assert b"HEADSECRET" not in out and b"METASECRET" not in out
+
+
+def test_svg_removal_appends_tail_to_previous_sibling(tmp_path: Path) -> None:
+    """The removed element is not the first child: its tail joins the previous sibling's."""
+    svg = (
+        b'<svg xmlns="http://www.w3.org/2000/svg"><text><tspan>A</tspan>gap '
+        b"<title>tip</title>TAIL-VISIBLE</text></svg>"
+    )
+    source = _docx_with_body(tmp_path / "prev.docx", "<w:p/>", {"word/media/p.svg": svg})
+    cleaned, _, _ = _clean(source.read_bytes())
+    out = _parts(cleaned)["word/media/p.svg"]
+    assert b"</tspan>gap TAIL-VISIBLE</text>" in out
+    assert b"tip" not in out
