@@ -25,6 +25,8 @@ MATHML_NS = "http://www.w3.org/1998/Math/MathML"
 # Visible content may live in foreignObject; editor/metadata namespaces are dropped.
 _KEPT_NAMESPACES = {SVG_NS, XLINK_NS, XML_NS, XHTML_NS, MATHML_NS, ""}
 _METADATA_TAGS = {"metadata", "title", "desc"}
+_XHTML_META_TAGS = {"head", "title", "meta"}  # never rendered; may carry author/title
+_MATHML_META_TAGS = {"annotation", "annotation-xml"}  # source markup, not displayed
 _KEPT_GIF_APPS = {b"NETSCAPE2.0", b"ANIMEXTS1.0"}  # loop count, needed for playback
 _EMF_SIGNATURE = b" EMF"
 _EMF_N_DESCRIPTION = 0x3C
@@ -124,8 +126,12 @@ def _prune_svg(element: ET.Element, removed: list[str]) -> None:
     for child in list(element):
         tag = child.tag if isinstance(child.tag, str) else ""
         local = tag.rsplit("}", 1)[-1]
-        in_svg = _ns(tag) in (SVG_NS, "")
-        if _ns(tag) not in _KEPT_NAMESPACES or (in_svg and local in _METADATA_TAGS):
+        namespace = _ns(tag)
+        in_svg = namespace in (SVG_NS, "")
+        embedded_meta = (namespace == XHTML_NS and local in _XHTML_META_TAGS) or (
+            namespace == MATHML_NS and local in _MATHML_META_TAGS
+        )
+        if namespace not in _KEPT_NAMESPACES or embedded_meta or (in_svg and local in _METADATA_TAGS):
             element.remove(child)
             removed.append(f"element {local}")
         else:
@@ -171,7 +177,8 @@ def clean_emf(data: bytes, label: str) -> tuple[bytes, list[Finding]]:
     if chars == 0:
         return data, []
     end = offset + 2 * chars
-    if offset < _EMF_MIN_HEADER or end > len(data):
+    record_size = struct.unpack_from("<I", data, 4)[0]
+    if offset < _EMF_MIN_HEADER or end > min(record_size, len(data)):
         raise CorruptFileError("EMF description is out of bounds")
     out = bytearray(data)
     out[offset:end] = bytes(end - offset)

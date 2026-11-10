@@ -525,7 +525,9 @@ def test_docx_emf_description_is_blanked_and_rescans_clean(tmp_path: Path) -> No
     emf = _emf_with_description()
     source = _docx_with_body(tmp_path / "emf.docx", "<w:p/>", {"word/media/image1.emf": emf})
     cleaned = _parts(_assert_stable(source))["word/media/image1.emf"]
-    assert b"E\x00M\x00F\x00S\x00" not in cleaned
+    for text in ("FakeDrawApp", "Fake Secret Title"):
+        assert text.encode("utf-16-le") in emf  # the real file does carry the description
+        assert text.encode("utf-16-le") not in cleaned
     assert len(cleaned) == len(emf)
     rebuilt = _docx_with_body(tmp_path / "emf2.docx", "<w:p/>", {"word/media/image1.emf": cleaned})
     assert not OfficeHandler().scan(rebuilt).findings
@@ -591,3 +593,32 @@ def test_svg_keeps_visible_foreign_object_text_and_cleans_unnamespaced_metadata(
     cleaned, _, _ = _clean(source.read_bytes())
     out = _parts(cleaned)["word/media/bare.svg"]
     assert b"BARESECRET" not in out and b"<rect" in out
+
+
+def test_emf_description_beyond_header_record_is_rejected_not_zeroed(tmp_path: Path) -> None:
+    """A description running past the header record must not blank the next record."""
+    import struct
+
+    emf = bytearray(_emf_with_description())
+    struct.pack_into("<I", emf, 0x3C, 40)  # 108 + 80 = 188 > nSize (172), still < len(file)
+    source = _docx_with_body(tmp_path / "bad.docx", "<w:p/>", {"word/media/bad.emf": bytes(emf)})
+    cleaned, findings, _ = _clean(source.read_bytes())
+    assert _parts(cleaned)["word/media/bad.emf"] == bytes(emf)
+    assert [f.key for f in findings] == ["office:media-uninspected"]
+
+
+def test_svg_foreign_object_head_meta_and_mathml_annotation_are_removed(tmp_path: Path) -> None:
+    svg = (
+        b'<svg xmlns="http://www.w3.org/2000/svg"><foreignObject width="5" height="5">'
+        b'<html xmlns="http://www.w3.org/1999/xhtml"><head><title>HEADSECRET</title>'
+        b'<meta name="author" content="METASECRET"/></head><body>VISIBLE TEXT'
+        b'<math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mi>x</mi>'
+        b"<annotation>MATHSECRET</annotation></semantics></math></body></html></foreignObject></svg>"
+    )
+    source = _docx_with_body(tmp_path / "fo2.docx", "<w:p/>", {"word/media/fo.svg": svg})
+    cleaned, _, _ = _clean(source.read_bytes())
+    out = _parts(cleaned)["word/media/fo.svg"]
+    for secret in (b"HEADSECRET", b"METASECRET", b"MATHSECRET"):
+        assert secret not in out
+    assert b"VISIBLE TEXT" in out
+    assert b"<mi" in out or b":mi" in out

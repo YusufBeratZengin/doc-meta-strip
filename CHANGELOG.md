@@ -25,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `media` folder, its extension or its bytes, not only by a `word/media/` path.
   JPEG/PNG/WebP metadata is removed, GIF comment and application extensions
   (XMP and similar), SVG `title`/`desc`/`metadata`/comments and editor
-  namespaces (visible XHTML/MathML in `foreignObject` is kept), and the EMF
+  namespaces (visible XHTML/MathML in `foreignObject` is kept; its `head`, `title`, `meta` and MathML `annotation` elements are removed), and the EMF
   header description are removed as well. WMF carries no free-form metadata.
   EMF+ and `EMR_COMMENT` records inside an EMF are not cleaned. Anything else
   in a package's media (TIFF, BMP, video, audio, corrupt files) is reported as
