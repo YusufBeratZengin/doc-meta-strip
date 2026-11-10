@@ -25,7 +25,7 @@ MATHML_NS = "http://www.w3.org/1998/Math/MathML"
 # Visible content may live in foreignObject; editor/metadata namespaces are dropped.
 _KEPT_NAMESPACES = {SVG_NS, XLINK_NS, XML_NS, XHTML_NS, MATHML_NS, ""}
 _METADATA_TAGS = {"metadata", "title", "desc"}
-_XHTML_META_TAGS = {"head", "title", "meta"}  # never rendered; may carry author/title
+_XHTML_META_TAGS = {"title", "meta"}  # never rendered; may carry author/title (head/style stay)
 _MATHML_META_TAGS = {"annotation", "annotation-xml"}  # source markup, not displayed
 _KEPT_GIF_APPS = {b"NETSCAPE2.0", b"ANIMEXTS1.0"}  # loop count, needed for playback
 _EMF_SIGNATURE = b" EMF"
@@ -118,6 +118,23 @@ def _ns(tag: object) -> str:
     return tag[1:].split("}", 1)[0] if isinstance(tag, str) and tag.startswith("{") else ""
 
 
+def _remove_keep_tail(parent: ET.Element, child: ET.Element) -> None:
+    """Remove ``child`` but keep the text that follows it (its ``tail``).
+
+    ElementTree stores trailing text on the removed element, so a plain
+    ``remove`` would delete visible text that sits after it.
+    """
+    siblings = list(parent)
+    index = siblings.index(child)
+    tail = child.tail or ""
+    if tail:
+        if index > 0:
+            siblings[index - 1].tail = (siblings[index - 1].tail or "") + tail
+        else:
+            parent.text = (parent.text or "") + tail
+    parent.remove(child)
+
+
 def _prune_svg(element: ET.Element, removed: list[str]) -> None:
     for attribute in list(element.attrib):
         if _ns(attribute) not in _KEPT_NAMESPACES:
@@ -132,7 +149,7 @@ def _prune_svg(element: ET.Element, removed: list[str]) -> None:
             namespace == MATHML_NS and local in _MATHML_META_TAGS
         )
         if namespace not in _KEPT_NAMESPACES or embedded_meta or (in_svg and local in _METADATA_TAGS):
-            element.remove(child)
+            _remove_keep_tail(element, child)
             removed.append(f"element {local}")
         else:
             _prune_svg(child, removed)

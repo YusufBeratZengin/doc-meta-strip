@@ -622,3 +622,34 @@ def test_svg_foreign_object_head_meta_and_mathml_annotation_are_removed(tmp_path
         assert secret not in out
     assert b"VISIBLE TEXT" in out
     assert b"<mi" in out or b":mi" in out
+
+
+def test_svg_removal_keeps_text_after_removed_element(tmp_path: Path) -> None:
+    """Text following a removed element (its ``tail``) is visible content and must stay."""
+    svg = (
+        b'<svg xmlns="http://www.w3.org/2000/svg"><foreignObject>'
+        b'<div xmlns="http://www.w3.org/1999/xhtml">Hello <meta itemprop="x"/>WORLD-VISIBLE-A</div>'
+        b"</foreignObject>"
+        b"<text>Hello <title>tip</title>WORLD-VISIBLE-B</text>"
+        b"<text><title>first</title>WORLD-VISIBLE-C</text></svg>"
+    )
+    source = _docx_with_body(tmp_path / "tail.docx", "<w:p/>", {"word/media/t.svg": svg})
+    cleaned, _, _ = _clean(source.read_bytes())
+    out = _parts(cleaned)["word/media/t.svg"]
+    for text in (b"Hello WORLD-VISIBLE-A", b"Hello WORLD-VISIBLE-B", b"WORLD-VISIBLE-C"):
+        assert text in out
+    assert b"tip" not in out and b"first" not in out and b"itemprop" not in out
+
+
+def test_svg_head_style_is_kept_while_title_and_meta_go(tmp_path: Path) -> None:
+    svg = (
+        b'<svg xmlns="http://www.w3.org/2000/svg"><foreignObject>'
+        b'<html xmlns="http://www.w3.org/1999/xhtml"><head><title>HEADSECRET</title>'
+        b'<meta name="author" content="METASECRET"/><style>p{color:red}</style></head>'
+        b"<body><p>VISIBLE</p></body></html></foreignObject></svg>"
+    )
+    source = _docx_with_body(tmp_path / "head.docx", "<w:p/>", {"word/media/h.svg": svg})
+    cleaned, _, _ = _clean(source.read_bytes())
+    out = _parts(cleaned)["word/media/h.svg"]
+    assert b"p{color:red}" in out and b"VISIBLE" in out
+    assert b"HEADSECRET" not in out and b"METASECRET" not in out
