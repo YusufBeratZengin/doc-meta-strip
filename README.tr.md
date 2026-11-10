@@ -97,10 +97,12 @@ anahtarları İngilizce kalır.)
 | **JPEG** | EXIF (makine, seri numarası, sahibi, GPS), XMP, IPTC/APP13, APP12, yorumlar, diğer tüm APPn blokları | JFIF (APP0), ICC renk profili (APP2), Adobe renk dönüşümü (APP14), tüm sıkıştırılmış görüntü baytları |
 | **PNG** | `tEXt`, `zTXt`, `iTXt` (Stable Diffusion / Midjourney istemleri burada durur), `eXIf`, `tIME`, `dSIG` | `IHDR`, `PLTE`, `IDAT`, `iCCP`, `gAMA`, `pHYs`, … |
 | **WebP** | `EXIF` ve `XMP ` parçaları ve `VP8X` içindeki ilgili özellik bayrakları | `VP8`/`VP8L`/`ALPH`/`ANIM` verisi |
-| **DOCX** | `docProps/core.xml`, `app.xml` (şirket, yönetici, `HyperlinkBase`), `custom.xml`, küçük resimler, `word/comments*.xml`, `word/people.xml`, izlenen silmeler (`w:del`), yorumlar, `w:rsid*` kayıt kimlikleri, revizyon öznitelikleri | belge gövdesi, stiller, numaralandırma, üstbilgiler, eklenen (`w:ins`) metin, görseller |
+| **DOCX** | `docProps/core.xml`, `app.xml` (şirket, yönetici, `HyperlinkBase`), `custom.xml`, küçük resimler, `word/comments*.xml`, `word/people.xml`, izlenen silmeler (`w:del`), yorumlar, `w:rsid*` kayıt kimlikleri, revizyon öznitelikleri | belge gövdesi, stiller, numaralandırma, üstbilgiler, eklenen (`w:ins`) metin, görsellerin piksel verisi (gömülü görselin üst verisi silinir) |
 | **XLSX** | aynı `docProps` parçaları, hücre yorumları, iş parçacıklı yorumlar, kişi listesi, eski yorum çizimleri | hücre değerleri, formüller, stiller, grafikler |
-| **PPTX** | `docProps` parçaları, küçük resimler, yorum parçaları | slaytlar, notlar, medya |
+| **PPTX** | `docProps` parçaları, küçük resimler, yorum parçaları | slaytlar, notlar, medyanın piksel verisi (gömülü görselin üst verisi silinir) |
 | **PDF** | Info sözlüğü (`Author`, `Producer`, `Creator`, `Title`…), XMP paketi, `/EmbeddedFiles`, `/JavaScript` ad ağacı, sayfa küçük resimleri, dosya eki/film/ses açıklamaları, `/PieceInfo` | metin katmanı, yazı tipleri, görseller, form alanları, yer imleri, sayfa yapısı |
+
+DOCX/XLSX/PPTX içindeki görseller paketin neresinde olursa olsun temizlenir: JPEG, PNG, WebP; ayrıca GIF (yorum ve XMP/uygulama uzantıları), SVG (`title`, `desc`, `metadata`, yorumlar, editör ad alanları) ve EMF (başlık açıklaması). WMF serbest üst veri taşımaz. EMF içindeki EMF+ ve `EMR_COMMENT` kayıtları temizlenmez. Diğer medya (TIFF, BMP, video, ses) incelenemez ve `office:media-uninspected` olarak raporlanır; bu dosyalarda (ör. gömülü videolu PPTX) `scan --strict` "temiz" demek yerine sıfırdan farklı döner.
 
 Oluşturma ve değiştirme tarihleri varsayılan olarak korunur; belge denetimi için
 genelde gerekirler. Tamamen silmek için `--strip-dates` kullanın.

@@ -130,6 +130,24 @@ def test_encrypted_pdf_cleaned_with_password(tmp_path: Path) -> None:
     assert any("not password protected" in warning for warning in warnings)
 
 
+def test_encrypted_pdf_accepts_empty_user_password() -> None:
+    import io
+
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    writer.add_blank_page(width=72, height=72)
+    writer.add_metadata({"/Author": "Fake Author"})
+    writer.encrypt(user_password="", owner_password="owner-only-secret")
+    source = io.BytesIO()
+    writer.write(source)
+
+    cleaned, findings, _ = _clean(source.getvalue(), password="")
+
+    assert findings
+    assert not PdfReader(io.BytesIO(cleaned)).is_encrypted
+
+
 def test_broken_pdf_raises(tmp_path: Path) -> None:
     broken = tmp_path / "broken.pdf"
     broken.write_bytes(b"%PDF-1.7\nthis is not really a pdf\n")

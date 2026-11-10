@@ -82,7 +82,7 @@ class PdfHandler(Handler):
         except PdfReadError as exc:
             raise CorruptFileError(f"not a readable PDF: {exc}") from exc
         if reader.is_encrypted:
-            if not password:
+            if password is None:
                 raise PasswordRequiredError(
                     "PDF is password protected; pass --password, --password - or --ask-password to clean it"
                 )

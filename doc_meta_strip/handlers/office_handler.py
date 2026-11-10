@@ -20,11 +20,14 @@ from xml.etree import ElementTree as ET
 from ..base import (
     CleanOptions,
     CorruptFileError,
+    DocMetaStripError,
     Finding,
     Handler,
     UnsupportedFormatError,
     shorten,
 )
+from ._vector_media import clean_emf, clean_gif, clean_svg, sniff_kind
+from .image_handler import ImageHandler
 
 __all__ = [
     "MAX_ARCHIVE_ENTRIES",
@@ -374,6 +377,16 @@ class OfficeHandler(Handler):
                     )
                     dropped.add(name)
 
+        # Clean document pictures in place without removing their relationships.
+        for name in list(parts):
+            if name in dropped or not self._is_media_part(name, parts[name]):
+                continue
+            new_media, media_findings, media_warnings = self._sanitize_media(name, parts[name], opts)
+            findings.extend(media_findings)
+            warnings.extend(media_warnings)
+            if new_media != parts[name]:
+                parts[name] = new_media
+
         transform_targets = [
             name
             for name in parts
@@ -390,6 +403,8 @@ class OfficeHandler(Handler):
             )
             if part_findings:
                 findings.extend(part_findings)
+            # Apply cleanup independently of whether it produced a finding.
+            if new_payload != parts[name]:
                 parts[name] = new_payload
 
         dropped |= self._comment_drawing_parts(parts, dropped)
@@ -420,6 +435,70 @@ class OfficeHandler(Handler):
         if any(name.startswith("ppt/") for name in parts):
             return "pptx"
         return None
+
+    _PACKAGE_IMAGE_SUFFIXES = (
+        ".jpg", ".jpeg", ".jpe", ".jfif", ".png", ".webp", ".gif", ".svg", ".emf", ".wmf",
+        ".tif", ".tiff", ".bmp", ".dib", ".wdp", ".jxr", ".heic", ".avif",
+    )  # fmt: skip
+
+    @classmethod
+    def _is_media_part(cls, name: str, payload: bytes = b"") -> bool:
+        """True for a picture part, wherever the package stores it.
+
+        OPC lets a relationship point at any path, so the location is not
+        trusted: a part counts when it lives in a ``media`` folder, has an
+        image extension, or its bytes look like a known image format.  XML
+        parts are never pictures (SVG is recognised by extension or root tag).
+        """
+        lowered = name.lower()
+        if lowered.endswith((".rels", ".xml")):
+            return False
+        if "/media/" in f"/{lowered}" or lowered.endswith(cls._PACKAGE_IMAGE_SUFFIXES):
+            return True
+        return ImageHandler().sniff(payload) or sniff_kind(name, payload) is not None
+
+    @staticmethod
+    def _sanitize_media(
+        name: str, payload: bytes, options: CleanOptions
+    ) -> tuple[bytes, list[Finding], list[str]]:
+        """Strip metadata from an embedded picture in place.
+
+        The media part is referenced by the document body, so it cannot be
+        dropped like an attachment; the bytes are cleaned instead.  JPEG, PNG,
+        WebP, GIF, SVG and EMF are cleaned; WMF carries no free-form metadata.
+        Anything else (TIFF, BMP, video, audio, ...) cannot be inspected and is reported as
+        ``office:media-uninspected``, never declared clean.
+        """
+        label = posixpath.basename(name)
+        handler = ImageHandler()
+        try:
+            if handler.sniff(payload):
+                cleaned, media_findings, _ = handler.clean_bytes(payload, options)
+                findings = [
+                    Finding(
+                        key=f"office:media:{finding.key}",
+                        value=f"{label}: {finding.value}",
+                        category=finding.category,
+                    )
+                    for finding in media_findings
+                ]
+                return cleaned, findings, []
+            kind = sniff_kind(name, payload)
+            if kind == "wmf":
+                return payload, [], []
+            cleaners = {"gif": clean_gif, "svg": clean_svg, "emf": clean_emf}
+            if kind in cleaners:
+                cleaned, vector_findings = cleaners[kind](payload, label)
+                findings = [
+                    Finding(key=f"office:media:{f.key}", value=f.value, category=f.category)
+                    for f in vector_findings
+                ]
+                return cleaned, findings, []
+            reason = "unsupported media format"
+        except DocMetaStripError as exc:
+            reason = f"could not be inspected: {exc}"
+        finding = Finding(key="office:media-uninspected", value=f"{label}: {reason}", category="embedded")
+        return payload, [finding], []
 
     @staticmethod
     def _is_comment_part(name: str) -> bool:
@@ -549,10 +628,18 @@ class OfficeHandler(Handler):
         except ET.ParseError as exc:
             raise CorruptFileError(f"{name} is not well formed: {exc}") from exc
         findings: list[Finding] = []
-        stats = {"deleted": 0, "inserted": 0, "comments": 0, "rsids": 0, "changes": 0}
+        stats = {"deleted": 0, "inserted": 0, "comments": 0, "rsids": 0, "rsid_attrs": 0, "changes": 0}
         change_authors: list[str] = []
+        changed = False
+
+        def strip_attributes(element: ET.Element) -> None:
+            nonlocal changed
+            rsids, identity = self._strip_revision_attributes(element)
+            stats["rsid_attrs"] += rsids
+            changed = changed or bool(rsids or identity)
 
         def walk(parent: ET.Element) -> None:
+            nonlocal changed
             for child in list(parent):
                 tag = child.tag
                 name = localname(tag)
@@ -561,10 +648,12 @@ class OfficeHandler(Handler):
                     continue
                 if name in {"commentReference", "commentRangeStart", "commentRangeEnd"}:
                     if remove_comments:
+                        changed = True
                         stats["comments"] += 1
                         parent.remove(child)
                     continue
                 if name in W_DROP:
+                    changed = True
                     if name == "del":
                         stats["deleted"] += 1
                         findings.append(
@@ -592,18 +681,27 @@ class OfficeHandler(Handler):
                     parent.remove(child)
                     continue
                 if name in W_UNWRAP:
+                    changed = True
                     index = list(parent).index(child)
                     parent.remove(child)
                     walk(child)
-                    for offset, grandchild in enumerate(list(child)):
-                        parent.insert(index + offset, grandchild)
                     if name in {"ins", "moveTo"}:
                         stats["inserted"] += 1
+                        author = (child.attrib.get(qname(NS_W, "author")) or "").strip()
+                        findings.append(
+                            Finding(
+                                key="word:tracked-insertion",
+                                value=shorten(author) if author else "inserted revision",
+                                category="identity" if author else "revision",
+                            )
+                        )
+                    for offset, grandchild in enumerate(list(child)):
+                        parent.insert(index + offset, grandchild)
                     continue
-                self._strip_revision_attributes(child)
+                strip_attributes(child)
                 walk(child)
 
-        self._strip_revision_attributes(root)
+        strip_attributes(root)
         walk(root)
 
         if stats["comments"]:
@@ -614,11 +712,16 @@ class OfficeHandler(Handler):
                     category="comment",
                 )
             )
-        if stats["rsids"]:
+        if stats["rsids"] or stats["rsid_attrs"]:
+            details = []
+            if stats["rsids"]:
+                details.append(f"{stats['rsids']} revision-save id block(s)")
+            if stats["rsid_attrs"]:
+                details.append(f"{stats['rsid_attrs']} revision-save attribute(s)")
             findings.append(
                 Finding(
                     key="word:rsid",
-                    value=f"{stats['rsids']} revision-save id block(s)",
+                    value="; ".join(details),
                     category="revision",
                 )
             )
@@ -632,18 +735,30 @@ class OfficeHandler(Handler):
             )
         for author in dict.fromkeys(change_authors):
             findings.append(Finding(key="word:change_author", value=shorten(author), category="identity"))
-        if not findings:
+        if not changed:
             return payload, []
         return serialize(root), findings
 
     @staticmethod
-    def _strip_revision_attributes(element: ET.Element) -> None:
+    def _strip_revision_attributes(element: ET.Element) -> tuple[int, int]:
+        """Remove revision-save IDs and author/date attributes.
+
+        Returns ``(rsid_count, identity_count)`` so the caller can tell a
+        modified tree from a byte-identical one and report the rsid cleanup.
+        """
+        rsids = 0
+        identity = 0
         for attr in list(element.attrib):
             if namespace_of(attr) != NS_W:
                 continue
             name = localname(attr)
-            if name.startswith("rsid") or name in {"author", "date", "userId"}:
+            if name.startswith("rsid"):
                 del element.attrib[attr]
+                rsids += 1
+            elif name in {"author", "date", "userId"}:
+                del element.attrib[attr]
+                identity += 1
+        return rsids, identity
 
     # ------------------------------------------------------- relationships
 
