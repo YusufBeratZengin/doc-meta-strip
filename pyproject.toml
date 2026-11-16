@@ -36,7 +36,7 @@ classifiers = [
   "Typing :: Typed",
 ]
 dependencies = [
-  "pypdf>=4.0,<7",
+  "pypdf>=4.0,<8",
   "Pillow>=9.0",
 ]
 
